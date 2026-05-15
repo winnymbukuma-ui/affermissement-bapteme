@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Maison de Miséricorde</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    
+     <!-- SUPABASE - doit etre AVANT script.JS -->
+
+     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+         const SUPABASE_URL = "https://tloicqvixmmdudzizmbu.supabase.co";
+         const SUPABASE_KEY = "sb_publishable_Xm65edvcm2Y74I4Z75bEXg_tO-f-cef";
+         const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+         console.log("Supabase connecte !");
+    </script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="photo-lightbox" id="photo-lightbox" onclick="fermerLightbox(event)">
+        <button class="close-lightbox" onclick="fermerLightbox(event)">✕</button>
+        <img id="lightbox-img" src="" alt="Photo">
+        <div class="photo-name" id="lightbox-name"></div>
+    </div>
+    
+    <div id="page-accueil">
+        <div class="accueil-card">
+            <h1> LA MAISON DE MISÉRICORDE</h1>
+            <div class="salutation" id="salutation"></div>
+            <p style="color:#666; font-size: 1.1em;">Bienvenue ! Veuillez choisir votre profil.</p>
+            
+            <div class="accueil-btns-container" id="accueil-main-btns">
+                <button class="accueil-btn btn-participant" onclick="changerVue('accueil-participant')"> Je suis Participant</button>
+                <button class="accueil-btn btn-encadrant" onclick="verifierEncadrant()"> Je suis Encadrant</button>
+            </div>
+            
+            <div class="accueil-btns-container hidden" id="accueil-participant-btns">
+                <button class="accueil-btn" style="background:#006070;color:white;" onclick="participantBapteme()">Baptême</button>
+                <button class="accueil-btn" style="background:#17a2b8;color:white;" onclick="participantAffermissement()"> Affermissement</button>
+                <button class="accueil-btn" style="background:#6c757d;color:white;flex:0.3;" onclick="changerVue('accueil-main')">⬅️</button>
+            </div>
+            
+            <div class="accueil-btns-container hidden" id="accueil-affermissement-btns">
+                <button class="accueil-btn" style="background:#17a2b8;color:white;" onclick="ouvrirModalSuiviTravail()"> Suivi Travaux</button>
+                <button class="accueil-btn" style="background:#28a745;color:white;" onclick="demanderCodeInscriptionAff()"> Inscriptions</button>
+                <button class="accueil-btn" style="background:#6c757d;color:white;flex:0.3;" onclick="changerVue('accueil-participant')">⬅️</button>
+            </div>
+    
+            <div class="accueil-btns-container hidden" id="accueil-encadrant-btns">
+                <button class="accueil-btn" style="background:#006070;color:white;" onclick="choisirAdmin('bapteme')">Baptême</button>
+                <button class="accueil-btn" style="background:#17a2b8;color:white;" onclick="choisirAdmin('affermissement')">Affermissement</button>
+                <button class="accueil-btn" style="background:#fd7e14;color:white;" onclick="choisirAdmin('cote')">Travaux</button>
+                <button class="accueil-btn" style="background:#6c757d;color:white;flex:0.3;" onclick="changerVue('accueil-main')">⬅️</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="modal-overlay" id="modal-encadrant">
+        <div class="modal-box">
+            <button type="button" class="close-modal" onclick="fermerModal('modal-encadrant')">✕</button>
+            <h3 style="margin-bottom: 15px; color:#006070;"> Authentification Encadrant</h3>
+            <input type="text" id="encad-prenom" placeholder="Votre Prénom (ex: Keren)">
+            <input type="password" id="encad-mdp" placeholder="Mot de passe Administrateur">
+            <div class="btn-grid">
+                <button type="button" onclick="inscrireEncadrantGlobal()" style="background:#28a745;">S'inscrire</button>
+                <button type="button" onclick="connecterEncadrantGlobal()">Se Connecter</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="modal-overlay" id="modal-mdp-bapteme">
+        <div class="modal-box">
+            <button type="button" class="close-modal" onclick="fermerModal('modal-mdp-bapteme')">✕</button>
+            <h3 style="color:#006070;"> Accès Baptême</h3>
+            <p style="font-size:13px;color:#666;margin:8px 0;">Entrez le code d'accès fourni par l'encadrant :</p>
+            <input type="password" id="code-acces-bapteme" placeholder="Code d'accès">
+            <button type="button" onclick="validerAccesBapteme()" style="background:#006070;"> Valider</button>
+        </div>
+    </div>
+    
+    <div class="modal-overlay" id="modal-code-aff">
+        <div class="modal-box">
+            <button type="button" class="close-modal" onclick="fermerModal('modal-code-aff')">✕</button>
+            <h3 style="color:#17a2b8;"> Accès Affermissement</h3>
+            <p style="font-size:13px;color:#666;margin:8px 0;">Entrez le code fourni par l'encadrant :</p>
+            <input type="password" id="code-acces-aff" placeholder="Code d'accès">
+            <button type="button" onclick="validerAccesAff()" style="background:#17a2b8;"> Valider</button>
+        </div>
+    </div>
+    
+    <div id="modal-suivi-travail">
+        <div class="suivi-box">
+            <button type="button" class="close-modal" onclick="fermerSuiviTravail()">✕</button>
+            <h3 style="color:#006070;"> Suivi de vos Travaux</h3>
+            <p style="font-size:13px;color:#666;margin:10px 0;">Entrez votre code à 4 chiffres :</p>
+            <input type="number" id="code-suivi-input" placeholder="Ex: 1234" style="text-align:center;font-size:1.5em;letter-spacing:8px;">
+            <button type="button" onclick="afficherSuiviParticipant()" style="background:#17a2b8;margin-top:10px;"> Vérifier</button>
+            <div id="resultat-suivi-participant" style="margin-top:15px;text-align:left;"></div>
+        </div>
+    </div>
+    
+    <div id="modal-vue-globale">
+        <div class="header-vue-globale">
+            <h2 style="margin:0; color:#333;">SUIVI GÉNÉRAL</h2>
+            <div style="display:flex; gap:10px;">
+                <button type="button" class="btn-pdf" style="margin:0;" onclick="telechargerPDF('table-excel-container', 'Suivi_General_Complet')"> Télécharger PDF</button>
+                <button type="button" class="btn-close-globale" onclick="fermerVueGlobale()">✕ Fermer</button>
+            </div>
+        </div>
+        <div class="table-container" id="table-excel-container"></div>
+    </div>
+    
+    <div id="cote-rapport">
+        <div id="releve-individuel" class="card hidden">
+            <button type="button" class="close-report-btn" onclick="fermerReleve()">✕</button>
+            <div id="contenu-releve"></div>
+            <button type="button" class="btn-pdf" onclick="telechargerPDF('contenu-releve','Releve_Individuel')"> Télécharger PDF</button>
+        </div>
+        <div id="releve-final" class="card hidden">
+            <button type="button" class="close-report-btn" onclick="fermerReleveFinal()">✕</button>
+            <div id="contenu-releve-final"></div>
+            <button type="button" class="btn-pdf" onclick="telechargerPDF('contenu-releve-final','Releve_Final')"> Télécharger PDF</button>
+        </div>
+    </div>
+    
+    <div id="cote-controle">
+    
+        <div id="section-inscription" class="hidden">
+            <div class="form-inscription-box">
+                <h3 id="titre-inscription"> Inscription</h3>
+                
+                <div class="affermissement-only full-width" style="margin-bottom: 10px;">
+                    <label class="checkbox-container" style="justify-content:center; background:#f0f4f5; padding:8px; border-radius:6px;">
+                        <input type="checkbox" id="check-ancien" onchange="remplirSessionsInscription()">
+                         Je suis un ancien participant (J'ai déjà un code)
+                    </label>
+                </div>
+    
+                <div id="zone-session-info" class="affermissement-only full-width" style="background:#e8f4f8; padding:10px; border-radius:8px; text-align:center; border: 1px solid #17a2b8; margin-bottom:15px;">
+                    <div id="info-nouveau-session">
+                        Inscription dans la session active : <b id="display-active-session" style="color:#006070;"></b>
+                    </div>
+                    <div id="info-ancien-session" class="hidden">
+                        <label style="font-size:13px; color:#555;">Choisissez votre ancienne session (pour retrouver votre dossier) :</label><br>
+                        <select id="ancienne-session-select" style="margin-top:5px; max-width:250px; display:inline-block;"></select>
+                        <div style="margin-top:8px; font-size:12px; color:#006070;">
+                            Vos données seront directement liées à la nouvelle session active : <b id="display-active-session-ancien"></b>
+                        </div>
+                    </div>
+                </div>
+    
+                <div id="form-nouveau" class="form-grid">
+                    <div class="affermissement-only">
+                        <div class="photo-upload-area" onclick="document.getElementById('photo-input').click()">
+                            <div id="photo-preview" style="color:#999;font-size:12px;font-weight:bold;"> Ajouter une photo</div>
+                        </div>
+                        <input type="file" id="photo-input" accept="image/*" style="display:none;" onchange="previewPhotoFile(this)">
+                    </div>
+    
+                    <div>
+                        <input type="text" id="nom" placeholder="Nom *">
+                        <input type="text" id="postnom" placeholder="Post-nom">
+                        <input type="text" id="prenom" placeholder="Prénom *">
+                        <input type="tel" id="telephone" placeholder="Téléphone">
+                    </div>
+    
+                    <div>
+                        <select id="etat-civil">
+                            <option value="">État civil</option>
+                            <option value="Célibataire">Célibataire</option>
+                            <option value="Marié(e)">Marié(e)</option>
+                            <option value="Veuve">Veuve</option>
+                            <option value="Veuf">Veuf</option>
+                        </select>
+                    </div>
+                    <div>
+                        <select id="profession">
+                            <option value="">Profession</option>
+                            <option value="Étudiant(e)">Étudiant(e)</option>
+                            <option value="Travailleur(se)">Travailleur(se)</option>
+                            <option value="Chercheur(se) d'emploi">Chercheur(se) d'emploi</option>
+                        </select>
+                    </div>
+    
+                    <div class="affermissement-only full-width form-grid">
+                        <div>
+                            <input type="text" id="adresse" placeholder="Adresse du domicile">
+                            <input type="tel" id="tel-urgence" placeholder="Téléphone d'urgence">
+                        </div>
+                        <div>
+                            <select id="salle">
+                                <option value="Salle A">Salle A</option>
+                                <option value="Salle B">Salle B</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="bapteme-only full-width">
+                        <input type="text" id="adresse-bap" placeholder="Adresse du domicile">
+                    </div>
+                </div>
+    
+                <div id="form-ancien" class="hidden full-width" style="background:#f9f9f9; padding:15px; border:1px solid #ddd; border-radius:8px; text-align:center;">
+                    <p style="font-size:13px; color:#555; margin-bottom:8px;">Entrez votre code pour confirmer le transfert vers la session active.</p>
+                    <input type="number" id="code-ancien" placeholder="Votre code à 4 chiffres *" style="max-width:200px; text-align:center; font-size:1.2em; letter-spacing:5px;">
+                </div>
+    
+                <div id="erreur-inscription" style="color:red; font-size:13px; text-align:center; font-weight:bold; margin-top:10px; display:none;"></div>
+                
+                <div class="full-width form-grid" style="margin-top: 15px;">
+                    <button type="button" onclick="fermerFormulaireInscription()" style="background:#6c757d;">⬅️ Annuler</button>
+                    <button type="button" onclick="sInscrire()" style="background:#28a745;"> Valider l'inscription</button>
+                </div>
+            </div>
+        </div>
+    
+        <div id="section-admin" class="admin-card hidden">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:10px;">
+                <div>
+                    <h3 id="admin-title" style="margin:0;text-align:left;">Administration</h3>
+                    <span style="font-size:12px;color:#28a745;font-weight:bold;" id="nom-encadrant-affiche"></span>
+                </div>
+                <button class="btn-quitter" onclick="changerVue('accueil-main')" style="padding:5px 10px; width:auto; margin:0; font-size:12px;">Déconnexion</button>
+            </div>
+    
+            <div class="affermissement-only" style="display:flex; gap:10px; margin-bottom:10px;">
+                <div style="background:#e8f4f8; padding:8px; border-radius:6px; flex:1;">
+                    <label style="font-size:12px; font-weight:bold; color:#006070;"> Filtrer Affichage (Session) :</label>
+                    <select id="admin-promo-filter" onchange="rafraichirFiltresAdmin()" style="margin:0; padding:6px; width:100%;"></select>
+                </div>
+                <div id="boite-session-active" style="background:#d4edda; padding:8px; border-radius:6px; border:1px solid #28a745; flex:1;">
+                    <label style="font-size:12px; font-weight:bold; color:#155724;">Session Inscriptions :</label>
+                    <select id="admin-session-active" onchange="changerSessionActive()" style="margin:0; padding:6px; width:100%;"></select>
+                </div>
+            </div>
+    
+            <div class="admin-section">
+                <h4>Gestion & Configurations</h4>
+                <div class="btn-grid">
+                    <button type="button" onclick="toggleDossiers()">Gérer les Leçons</button>
+                    <button type="button" class="affermissement-only" onclick="togglePromos()">Nouvelle session</button>
+                </div>
+                
+                <div id="gestion-dossiers" class="hidden" style="background:#fff; padding:10px; border-radius:8px; margin-top:5px; border:1px solid #ddd;">
+                    <input type="text" id="nom-dossier" placeholder="Nouvelle leçon (ex: LECON 1)">
+                    <button type="button" onclick="creerDossier()">Créer Leçon</button>
+                    <div id="liste-dossiers-admin" style="margin-top:10px; max-height:200px; overflow-y:auto;"></div>
+                </div>
+    
+                <div id="gestion-promos" class="hidden affermissement-only" style="background:#fff; padding:10px; border-radius:8px; margin-top:5px; border:1px solid #ddd;">
+                    <p style="font-size:11px; color:#666; margin-bottom:5px;">Créez ici les sessions (ex: Session 2026) pour les inscriptions.</p>
+                    <div style="display:flex; gap:5px;">
+                        <input type="text" id="nouvelle-promo" placeholder="Ex: Session 2026" style="padding:6px; font-size:12px;">
+                        <button type="button" onclick="ajouterPromo()" style="width:auto; padding:6px 12px; font-size:12px;">Ajouter</button>
+                    </div>
+                    <div id="liste-promos-admin" style="font-size:12px; margin-top:10px;"></div>
+                </div>
+                
+                <button type="button" onclick="ouvrirVueGlobale()" style="background:#ffc107; color:black; margin-top:10px;"> Voir le Suivi Général Global</button>
+            </div>
+    
+            <div class="admin-section">
+                <h4> Relevé Individuel</h4>
+                <div class="search-container">
+                    <input type="text" id="recherche-nom" placeholder="Tapez le nom..." oninput="afficherSuggestions()" autocomplete="off">
+                    <div id="suggestions" class="suggestions-box hidden"></div>
+                </div>
+                <div class="btn-grid">
+                    <button type="button" onclick="rechercherParticipant()"> Voir Relevé</button>
+                    <button type="button" id="btn-releve-final" onclick="rechercherReleveFinal()"> Relevé Final</button>
+                </div>
+            </div>
+    
+            <div class="admin-section" id="section-presence">
+                <h4>Prise de Présence</h4>
+                <select id="select-session" style="margin-bottom:5px;"></select>
+                <div class="btn-grid">
+                    <button type="button" class="scan-btn" id="btn-start" onclick="demarrerScanner()"> Scanner QR</button>
+                    <button type="button" class="stop-btn" id="btn-stop" onclick="arreterScanner()"> Stop</button>
+                    <input type="number" id="code-manuel" placeholder="Code manuel 4 chiffres" style="grid-column:1/-1;">
+                    <button type="button" class="btn-valider btn-full" onclick="validerPresence(document.getElementById('code-manuel').value)">Valider Présence</button>
+                </div>
+                <div id="reader"></div>
+            </div>
+    
+            <div class="admin-section" id="section-cote" style="display:none;">
+                <h4> Prise de Cote & Accusé de TP</h4>
+    
+                <div style="background:#e8f4f8; padding:8px; border-radius:6px; margin-bottom:8px;">
+                    <label style="font-size:12px; font-weight:bold; color:#006070;"> Filtrer Affichage (Session) :</label>
+                    <select id="cote-promo-filter" onchange="rafraichirFiltresCote()" style="margin:0; padding:6px; width:100%;"></select>
+                </div>
+                <select id="select-session-cote" onchange="updateSousDossierSelect()"></select>
+                <select id="select-sous-dossier-cote"></select>
+                <div class="search-container" style="margin-top:5px;">
+                    <input type="text" id="recherche-cote-nom" placeholder="Rechercher participant..." oninput="afficherSuggestionsCote()" autocomplete="off">
+                    <div id="suggestions-cote" class="suggestions-box hidden"></div>
+                </div>
+                
+                <div style="background:#f0f4f5; padding:8px; border-radius:6px; margin-top:10px;">
+                    <button type="button" onclick="accuserReceptionTP()" style="background:#fd7e14; margin-bottom:5px;"> 1. Accuser Réception de ce TP</button>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <select id="valeur-cote" style="margin:0;">
+                            <option value="">Vide</option>
+                            <option value="E">E </option>
+                            <option value="TB">TB</option>
+                            <option value="B">B </option>
+                            <option value="refaire"> à refaire</option>
+                        </select>
+                        <button type="button" onclick="validerCote()" class="btn-valider" style="margin:0;"> Appliquer</button>
+                    </div>
+                </div>
+            </div>
+    
+            <div class="admin-section" id="section-participants-admin">
+                <h4> Gérer les Participants</h4>
+                <button type="button" onclick="toggleListeEtudiants()">Afficher / Supprimer</button>
+                <div id="liste-etudiants-suppr" class="hidden" style="background:#fff; padding:10px; border-radius:8px; margin-top:5px; border:1px solid #ddd; max-height:300px; overflow-y:auto;">
+                    <input type="text" id="filtre-suppr" placeholder="Filtrer par nom..." oninput="afficherListeEtudiants()">
+                    <div id="contenu-liste-etudiants"></div>
+                </div>
+            </div>
+    
+            <div class="admin-params-bottom">
+                <h4> Paramètres Sécurité & Accès</h4>
+                <button type="button" class="btn-param" id="btn-changer-mdp-inscr" onclick="modifierCodeInscription()"> Changer MDP Formulaire</button>
+                <button type="button" class="btn-param" id="btn-changer-mdp-admin" onclick="modifierMotDePasse()"> Changer MDP Admin</button>
+                <button type="button" class="btn-param" id="btn-delete-all-bap" onclick="deleteAllBaptemes()" style="background:#dc3545; display:none;">RESET TOUT (Baptême)</button>
+                <div id="display-mdp-inscr" style="font-size:10px; color:#888; margin-top:5px;"></div>
+            </div>
+        </div>
+    
+        <div id="section-resultat" class="hidden" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;justify-content:center;align-items:center;z-index:9999;">
+            <div style="background:white;padding:30px;border-radius:15px;max-width:400px;width:90%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+                <h3 style="color:#28a745;">Inscription Réussie !</h3>
+                <div id="qrcode" style="display:flex;justify-content:center;padding:10px;"></div>
+                <p style="font-size:1.1em; margin:10px 0;">
+                    Nom: <span id="affiche-nom" style="font-weight:bold;"></span><br>
+                    Code: <strong id="affiche-code" style="font-size:1.8em;color:#006070;letter-spacing:6px;display:block;margin-top:10px;"></strong>
+                </p>
+                <p style="font-size:12px;color:#dc3545;font-weight:bold;margin-bottom:15px;">Prenez une capture d'écran de ce code, il vous servira pour vos suivis !</p>
+                <button type="button" onclick="changerVue('accueil-main')" style="background:#006070;"> Retour à l'accueil</button>
+            </div>
+        </div>
+    
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
