@@ -1363,7 +1363,7 @@ function ouvrirVueGlobalePresence() {
         let dates = [...new Set(lp.map(x=>x.date))].sort((a,b) => { let [ja,ma,aa]=a.split('/'); let [jb,mb,ab]=b.split('/'); return new Date(aa,ma-1,ja) - new Date(ab,mb-1,jb); });
         structure.push({ session: s, dates: dates, lp: lp, color: couleurGrille }); totalDatesGlobalCount += dates.length;
     });
-    html += `<tr class="excel-header-row1"><th rowspan="2" class="col-prenom">PRENOMS</th><th rowspan="2" class="col-nom">NOMS</th>`;
+    html += `<tr class="excel-header-row1"><th rowspan="2" style="background:#006070;color:white;font-size:12px;min-width:30px;">N°</th><th rowspan="2" class="col-prenom">PRENOMS</th><th rowspan="2" class="col-nom">NOMS</th>`;
     structure.forEach(st => { html += `<th colspan="${st.dates.length+2}" style="background:${st.color}; font-size:13px; color:#000;">${st.session.toUpperCase()}</th>`; });
     html += `<th rowspan="2" style="background:#ffc107; font-size:13px; color:#000;">% GLOBAL</th></tr><tr>`;
     structure.forEach(st => {
@@ -1371,8 +1371,9 @@ function ouvrirVueGlobalePresence() {
         html += `<th style="background:${st.color}; font-size:10px; color:#000;">TOT</th><th style="background:${st.color}; font-size:10px; color:#000;">%</th>`;
     }); html += `</tr>`;
     let tousEtudiants = [...getEtudiantsFiltres()].sort((a,b) => a.prenom.localeCompare(b.prenom));
+    let num = 1;
     tousEtudiants.forEach(etu => {
-        html += `<tr><td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td><td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
+        html += `<tr><td style="text-align:center;font-weight:bold;color:#006070;font-size:12px;background:#e8f4f8;">${num++}</td><td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td><td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
         let totalPresencesGlobal = 0;
         structure.forEach(st => {
             let totalP = 0;
@@ -1380,20 +1381,23 @@ function ouvrirVueGlobalePresence() {
             let pct = st.dates.length > 0 ? Math.round((totalP / st.dates.length) * 100) : 0; html += `<td class="excel-total">${totalP>0?totalP:''}</td><td class="excel-total" style="${getCouleurPourcentage(pct)}">${pct}%</td>`;
         });
         let pctGlobal = totalDatesGlobalCount > 0 ? Math.round((totalPresencesGlobal / totalDatesGlobalCount) * 100) : 0; html += `<td class="excel-total" style="${getCouleurPourcentage(pctGlobal)}; font-size:14px;"><b>${pctGlobal}%</b></td></tr>`;
-    }); container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
+    });
+    html += `<tr style="background:#006070;"><td colspan="3" style="color:white;font-weight:bold;font-size:13px;padding:6px;text-align:left;">TOTAL : ${tousEtudiants.length} participant(s)</td>${structure.map(st=>`<td colspan="${st.dates.length+2}" style="color:white;font-weight:bold;text-align:center;font-size:12px;">${st.dates.length} séance(s)</td>`).join('')}<td style="color:white;"></td></tr>`;
+    container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
 }
 
 function ouvrirVueGlobaleCote() {
     const container = document.getElementById('table-excel-container'); let html = `<table class="excel-table">`; const couleurGrille = '#b4c6e7'; let totalSousDossiersGlobalCount = 0;
-    html += `<tr class="excel-header-row1"><th rowspan="2" class="col-prenom">PRENOMS</th><th rowspan="2" class="col-nom">NOMS</th>`;
+    html += `<tr class="excel-header-row1"><th rowspan="2" style="background:#006070;color:white;font-size:12px;min-width:30px;">N°</th><th rowspan="2" class="col-prenom">PRENOMS</th><th rowspan="2" class="col-nom">NOMS</th>`;
     sessionsCotes.forEach(st => { let colspan = (st.sous && st.sous.length > 0) ? st.sous.length + 1 : 2; html += `<th colspan="${colspan}" style="background:${couleurGrille}; font-size:13px; color:#000;">${st.nom.toUpperCase()}</th>`; if(st.sous && st.sous.length > 0) totalSousDossiersGlobalCount += st.sous.length; });
     html += `<th rowspan="2" style="background:#ffc107; font-size:13px; color:#000;">% GLOBAL</th></tr><tr>`;
     sessionsCotes.forEach(st => {
         if(!st.sous || st.sous.length === 0) { html += `<th style="background:${couleurGrille};">-</th><th style="background:${couleurGrille}; font-size:10px; color:#000;">%</th>`; } else { st.sous.forEach(sd => { html += `<th style="background:${couleurGrille}; font-size:10px; color:#000;">${sd}</th>`; }); html += `<th style="background:${couleurGrille}; font-size:10px; color:#000;">%</th>`; }
     }); html += `</tr>`;
     let tousEtudiants = [...getEtudiantsFiltres()].sort((a,b) => a.prenom.localeCompare(b.prenom));
+    let num = 1;
     tousEtudiants.forEach(etu => {
-        html += `<tr><td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td><td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
+        html += `<tr><td style="text-align:center;font-weight:bold;color:#006070;font-size:12px;background:#e8f4f8;">${num++}</td><td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td><td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
         let totalGradesGlobal = 0;
         sessionsCotes.forEach(st => {
             if(!st.sous || st.sous.length === 0) { html += `<td></td><td class="excel-total" style="${getCouleurPourcentage(0)}">0%</td>`; } else {
@@ -1406,7 +1410,9 @@ function ouvrirVueGlobaleCote() {
             }
         });
         let pctGlobal = totalSousDossiersGlobalCount > 0 ? Math.round((totalGradesGlobal / totalSousDossiersGlobalCount) * 100) : 0; html += `<td class="excel-total" style="${getCouleurPourcentage(pctGlobal)}; font-size:14px;"><b>${pctGlobal}%</b></td></tr>`;
-    }); container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
+    });
+    html += `<tr style="background:#006070;"><td colspan="3" style="color:white;font-weight:bold;font-size:13px;padding:6px;text-align:left;">TOTAL : ${tousEtudiants.length} participant(s)</td>${sessionsCotes.map(st=>`<td colspan="${(st.sous&&st.sous.length>0)?st.sous.length+1:2}" style="color:white;font-weight:bold;text-align:center;font-size:12px;">${(st.sous&&st.sous.length)||0} TP(s)</td>`).join('')}<td style="color:white;"></td></tr>`;
+    container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
 }
 function fermerVueGlobale() { document.getElementById('modal-vue-globale').style.display = 'none'; }
 
