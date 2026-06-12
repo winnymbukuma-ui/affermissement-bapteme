@@ -24,7 +24,7 @@ let cotesData        = {};
 let promosAffermissement = [];
 let accuseTPData     = {};
 let encadrantsInscrits = [];
-let motDePasse       = "1234"; // valeur par défaut, écrasée depuis Supabase
+let motDePasse       = ""; // chargé depuis Supabase au démarrage
 
 let currentMode         = '';
 let html5QrCode         = null;
@@ -34,22 +34,19 @@ let encadrantAuthentifie = false;
 let filtreAdminPromo    = "ALL"; 
 
 const joursNoms = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
-// ✅ Toujours la date du jour réelle, même si la page est ouverte depuis plusieurs heures
+//  Toujours la date du jour réelle, même si la page est ouverte depuis plusieurs heures
 function getDuJour() { return new Date().toLocaleDateString('fr-FR'); }
 
 // =========== HELPERS SUPABASE ===========
 // db est défini dans le HTML avant ce script
 
-// ✅ Source unique de vérité : session active depuis Supabase
+//  Source unique de vérité : session active depuis Supabase
 async function getActiveSession() {
     try {
         const { data, error } = await db.from('sessions_affermissement').select('nom').eq('est_active', true).single();
-        if(data) {
-            localStorage.setItem(KEY_ACTIVE_PROMO, data.nom); // sync local
-            return data.nom;
-        }
-    } catch(e) {}
-    // Fallback local si Supabase inaccessible
+        if(data) { localStorage.setItem(KEY_ACTIVE_PROMO, data.nom); return data.nom; }
+        if(error && error.code !== 'PGRST116') console.warn('getActiveSession:', error.message);
+    } catch(e) { console.warn('getActiveSession inaccessible:', e.message); }
     return localStorage.getItem(KEY_ACTIVE_PROMO) || '';
 }
 
@@ -87,6 +84,8 @@ async function dbDelete(table, match) {
 function initAccueil() {
     const h = new Date().getHours();
     document.getElementById('salutation').innerText = h < 12 ? " Bonjour !" : (h < 18 ? " Bonne après-midi !" : " Bonsoir !");
+    //  Réveiller Supabase dès l'ouverture (évite la mise en pause de 7 jours)
+    setTimeout(async () => { try { await db.from('config_application').select('cle').limit(1); } catch(e) {} }, 500);
 }
 initAccueil();
 
@@ -179,8 +178,8 @@ async function afficherSuiviParticipant() {
     document.getElementById('resultat-suivi-participant').innerHTML = '<p style="color:#006070;">Chargement...</p>';
 
     try {
-        // 1. Trouver le participant dans Supabase
-        const { data: parts } = await db.from('participants_affermissement').select('*').eq('code', code);
+        // 1. Trouver le participant dans Supabase — ilike pour éviter problème CHAR(4)
+        const { data: parts } = await db.from('participants_affermissement').select('*').ilike('code', code.trim()).limit(1);
         if(!parts || parts.length === 0) return alert("Code introuvable.");
         const etu = parts[0];
 
@@ -283,23 +282,22 @@ function choisirAdmin(mode) {
 // =========== DATA GESTION — Charge depuis Supabase + cache local ===========
 async function chargerDonnees() {
     if(currentMode === 'bapteme') {
-        // Charger participants bapteme depuis Supabase
-        const parts = await dbSelect('participants_bapteme');
+        //  OPTIMISATION : charger participants, leçons et présences en parallèle (1 aller-retour au lieu de 3)
+        const [parts, lecons, presences] = await Promise.all([
+            dbSelect('participants_bapteme'),
+            dbSelect('lecons_bapteme'),
+            dbSelect('presences_bapteme')
+        ]);
+
         etudiants = parts.map(p => ({
             code: p.code, nom: p.nom, postnom: p.postnom || '', prenom: p.prenom,
             telephone: p.telephone, adresse: p.adresse, etatCivil: p.etat_civil,
             profession: p.profession, _id: p.id
         }));
-        localStorage.setItem(KEY_ETUDIANTS_BAP, JSON.stringify(etudiants));
 
-        // Charger leçons bapteme
-        const lecons = await dbSelect('lecons_bapteme');
         sessions = lecons.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
         if(sessions.length === 0) sessions = ["BAPTEME 1"];
-        localStorage.setItem(KEY_SESSIONS_BAP, JSON.stringify(sessions));
 
-        // Charger présences bapteme
-        const presences = await dbSelect('presences_bapteme');
         historique = {};
         for(const pr of presences) {
             const lecon = lecons.find(l => l.id === pr.lecon_id);
@@ -307,20 +305,23 @@ async function chargerDonnees() {
             const part = etudiants.find(e => e._id === pr.participant_id);
             if(!part) continue;
             if(!historique[nomLecon]) historique[nomLecon] = [];
-            // ✅ Correction fuseau horaire : lire la date ISO directement sans new Date()
-            const dateStr = pr.date_presence.split('T')[0]; // YYYY-MM-DD
+            const dateStr = pr.date_presence.split('T')[0];
             const [y,m,d] = dateStr.split('-');
-            const dateFR = `${d}/${m}/${y}`; // dd/mm/yyyy
-            historique[nomLecon].push({ code: part.code, date: dateFR, encadrant: pr.encadrant_id || '' });
+            historique[nomLecon].push({ code: part.code, date: `${d}/${m}/${y}`, encadrant: '' });
         }
-        localStorage.setItem(KEY_PRESENCES_BAP, JSON.stringify(historique));
 
     } else if(currentMode === 'affermissement' || currentMode === 'cote') {
-        // Charger participants affermissement depuis Supabase
-        const parts = await dbSelect('participants_affermissement');
-        // Charger les sessions pour retrouver les noms
-        const sessRows = await dbSelect('sessions_affermissement');
+        //  OPTIMISATION : charger tout en parallèle (1 aller-retour au lieu de 6)
+        const [parts, sessRows, lecons, sousDossiers, presences, cotesRows] = await Promise.all([
+            dbSelect('participants_affermissement'),
+            dbSelect('sessions_affermissement'),
+            dbSelect('lecons_affermissement'),
+            dbSelect('sous_dossiers_cote'),
+            dbSelect('presences_affermissement'),
+            dbSelect('cotes')
+        ]);
 
+        // Participants
         etudiants = parts.map(p => {
             const sessActive = sessRows.find(s => s.id === p.session_active_id);
             return {
@@ -333,27 +334,18 @@ async function chargerDonnees() {
                 _id: p.id
             };
         });
-        localStorage.setItem(KEY_ETUDIANTS_AFF, JSON.stringify(etudiants));
 
-        // Charger sessions/promos ET lire la session active depuis Supabase
+        // Sessions / promos
         promosAffermissement = sessRows.sort((a,b)=> new Date(a.date_creation)-new Date(b.date_creation)).map(s => s.nom);
         if(!promosAffermissement.includes("Session 23")) promosAffermissement.push("Session 23");
-        localStorage.setItem(KEY_PROMOS_AFF, JSON.stringify(promosAffermissement));
-        
-        // ✅ CORRECTION : lire la session active depuis Supabase (est_active = true)
         const sessActiveRow = sessRows.find(s => s.est_active === true);
-        if(sessActiveRow) {
-            localStorage.setItem(KEY_ACTIVE_PROMO, sessActiveRow.nom);
-        }
+        if(sessActiveRow) localStorage.setItem(KEY_ACTIVE_PROMO, sessActiveRow.nom);
 
-        // Charger leçons affermissement
-        const lecons = await dbSelect('lecons_affermissement');
+        // Leçons
         sessions = lecons.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
         if(sessions.length === 0) sessions = ["LECON 1"];
-        localStorage.setItem(KEY_SESSIONS_AFF, JSON.stringify(sessions));
 
-        // Charger présences affermissement
-        const presences = await dbSelect('presences_affermissement');
+        // Présences
         historique = {};
         for(const pr of presences) {
             const lecon = lecons.find(l => l.id === pr.lecon_id);
@@ -362,20 +354,12 @@ async function chargerDonnees() {
             const sess = sessRows.find(s => s.id === pr.session_id);
             if(!part) continue;
             if(!historique[nomLecon]) historique[nomLecon] = [];
-            // ✅ Correction fuseau horaire : lire la date ISO directement sans new Date()
             const dateStr = pr.date_presence.split('T')[0];
             const [y,m,d] = dateStr.split('-');
-            const dateFR = `${d}/${m}/${y}`;
-            historique[nomLecon].push({ 
-                code: part.code, date: dateFR,
-                encadrant: '',
-                promo: sess ? sess.nom : ''
-            });
+            historique[nomLecon].push({ code: part.code, date: `${d}/${m}/${y}`, encadrant: '', promo: sess ? sess.nom : '' });
         }
-        localStorage.setItem(KEY_PRESENCES_AFF, JSON.stringify(historique));
 
-        // Charger leçons (sous-dossiers) pour côtes
-        const sousDossiers = await dbSelect('sous_dossiers_cote');
+        // Sous-dossiers et structure côtes
         sessionsCotes = lecons.map(l => ({
             nom: l.nom,
             sous: sousDossiers.filter(sd => sd.lecon_id === l.id)
@@ -383,12 +367,9 @@ async function chargerDonnees() {
                               .map(sd => sd.nom),
             _id: l.id
         })).filter(sc => sc.sous.length > 0);
-        localStorage.setItem(KEY_SESSIONS_COTE, JSON.stringify(sessionsCotes));
 
-        // Charger côtes depuis Supabase
-        const cotesRows = await dbSelect('cotes');
-        cotesData = {};
-        accuseTPData = {};
+        // Côtes
+        cotesData = {}; accuseTPData = {};
         for(const c of cotesRows) {
             const sd = sousDossiers.find(s => s.id === c.sous_dossier_id);
             const lecon = lecons.find(l => sd && l.id === sd.lecon_id);
@@ -398,35 +379,25 @@ async function chargerDonnees() {
             if(!cotesData[nomLecon]) cotesData[nomLecon] = {};
             if(!cotesData[nomLecon][nomSd]) cotesData[nomLecon][nomSd] = [];
             cotesData[nomLecon][nomSd].push({ code: part.code, cote: c.valeur || '' });
-            // Accusé de réception
             if(c.accuse_reception) {
                 if(!accuseTPData[nomLecon]) accuseTPData[nomLecon] = {};
                 if(!accuseTPData[nomLecon][nomSd]) accuseTPData[nomLecon][nomSd] = [];
                 if(!accuseTPData[nomLecon][nomSd].includes(part.code)) accuseTPData[nomLecon][nomSd].push(part.code);
             }
         }
-        localStorage.setItem(KEY_DATA_COTE, JSON.stringify(cotesData));
-        localStorage.setItem(KEY_ACCUSE_TP, JSON.stringify(accuseTPData));
+
+        // Sync localStorage minimal (pour affichage rapide seulement)
+        localStorage.setItem(KEY_PROMOS_AFF, JSON.stringify(promosAffermissement));
     }
 }
 
-// Sauvegarde locale uniquement (pour les données non-critiques)
+// localStorage : cache minimal uniquement — les données réelles sont dans Supabase
 function sauvegarderDonneesLocal() {
-    if(currentMode === 'bapteme') {
-        localStorage.setItem(KEY_ETUDIANTS_BAP, JSON.stringify(etudiants)); 
-        localStorage.setItem(KEY_SESSIONS_BAP, JSON.stringify(sessions)); 
-        localStorage.setItem(KEY_PRESENCES_BAP, JSON.stringify(historique));
-    } else {
-        localStorage.setItem(KEY_ETUDIANTS_AFF, JSON.stringify(etudiants)); 
-        localStorage.setItem(KEY_SESSIONS_AFF, JSON.stringify(sessions)); 
-        localStorage.setItem(KEY_PRESENCES_AFF, JSON.stringify(historique)); 
-        localStorage.setItem(KEY_PROMOS_AFF, JSON.stringify(promosAffermissement)); 
-        localStorage.setItem(KEY_SESSIONS_COTE, JSON.stringify(sessionsCotes)); 
-        localStorage.setItem(KEY_DATA_COTE, JSON.stringify(cotesData)); 
-        localStorage.setItem(KEY_ACCUSE_TP, JSON.stringify(accuseTPData));
-    }
+    // On ne sauvegarde PAS les données sensibles (participants, présences, côtes)
+    // On garde seulement les préférences légères
+    localStorage.setItem(KEY_PROMOS_AFF, JSON.stringify(promosAffermissement));
 }
-// Alias pour la compatibilité avec les anciens appels
+// Alias pour compatibilité
 function sauvegarderDonnees() { sauvegarderDonneesLocal(); }
 
 // =========== ADMIN SETUP ===========
@@ -449,7 +420,7 @@ async function lancerSessionAdmin(prenom, pushState = true) {
     document.getElementById('btn-changer-mdp-inscr').style.display = estCote ? 'none' : 'inline-block';
     document.getElementById('btn-changer-mdp-admin').style.display = estAff ? 'inline-block' : 'none';
 
-    // ✅ Lire le code d'accès depuis Supabase
+    //  Lire le code d'accès depuis Supabase
     if(!estCote) {
         const cleCfg = estBapteme ? 'code_acces_bapteme' : 'code_acces_affermissement';
         const cfgRows = await dbSelect('config_application', { cle: cleCfg });
@@ -459,7 +430,6 @@ async function lancerSessionAdmin(prenom, pushState = true) {
         document.getElementById('display-mdp-inscr').innerText = "";
     }
 
-    const zoneFiltre = document.querySelector('.affermissement-only[style]');
     if(estAff || estCote) { rafraichirListePromosAdmin(); }
 
     if(estCote) {
@@ -474,9 +444,9 @@ async function lancerSessionAdmin(prenom, pushState = true) {
         let selCoteFiltre = document.getElementById('cote-promo-filter');
         selCoteFiltre.innerHTML = `<option value="ALL">Toutes les sessions</option>` + promosAffermissement.map(p => `<option value="${p}">${p}</option>`).join('');
         selCoteFiltre.value = filtreAdminPromo;
-        // ✅ Lire la session active depuis Supabase
+        //  Lire la session active depuis Supabase
         const activeSessionCote = await getActiveSession();
-        document.getElementById('admin-title').innerText = '⚙️ Admin - TRAVAUX | Session: ' + (activeSessionCote || '(aucune)');
+        document.getElementById('admin-title').innerText = ' Admin - TRAVAUX | Session: ' + (activeSessionCote || '(aucune)');
     } else if(estBapteme) {
         document.getElementById('section-presence').style.display = 'block';
         document.getElementById('section-cote').style.display     = 'none';
@@ -529,7 +499,7 @@ function rafraichirListePromosAdmin() {
     ).join('');
     syncFiltreDropdown();
     let selActive = document.getElementById('admin-session-active');
-    // ✅ Lire la session active depuis localStorage (mis à jour depuis Supabase dans chargerDonnees)
+    //  Lire la session active depuis localStorage (mis à jour depuis Supabase dans chargerDonnees)
     let currentActive = localStorage.getItem(KEY_ACTIVE_PROMO);
     if(promosAffermissement.length > 0) {
         if(!currentActive || !promosAffermissement.includes(currentActive)) {
@@ -587,7 +557,7 @@ async function changerSessionActive() {
         await db.from('sessions_affermissement').update({ est_active: true }).eq('nom', nomSession);
         // 3. Sauvegarder aussi en local pour accès rapide
         localStorage.setItem(KEY_ACTIVE_PROMO, nomSession);
-        alert("✅ Session active mise à jour : " + nomSession + "\nTous les appareils verront maintenant cette session.");
+        alert(" Session active mise à jour : " + nomSession + "\nTous les appareils verront maintenant cette session.");
     } catch(e) {
         // En cas d'erreur Supabase, sauvegarder quand même en local
         localStorage.setItem(KEY_ACTIVE_PROMO, nomSession);
@@ -618,7 +588,7 @@ async function modifierMotDePasse() {
     try {
         await dbUpdate('config_application', { cle: 'mot_de_passe_admin' }, { valeur: nouveau.trim() });
         motDePasse = nouveau.trim();
-        alert("✅ Mot de passe Admin modifié ! Tous les encadrants devront utiliser le nouveau mot de passe.");
+        alert(" Mot de passe Admin modifié ! Tous les encadrants devront utiliser le nouveau mot de passe.");
     } catch(e) { alert("Erreur : " + e.message); }
 }
 
@@ -686,11 +656,8 @@ async function remplirSessionsInscription() {
 // ─── INSCRIPTION PRINCIPALE — SAUVEGARDE DANS SUPABASE ───────────────────
 async function sInscrire() {
     try {
-        // Charger les données fraîches depuis Supabase
-        await chargerDonnees();
-
         let isAncien = (currentMode === 'affermissement' && document.getElementById('check-ancien').checked);
-        // ✅ Session active depuis Supabase
+        //  Session active depuis Supabase
         let activeSession = await getActiveSession();
         let errDiv = document.getElementById('erreur-inscription');
         errDiv.style.display = 'none';
@@ -704,8 +671,10 @@ async function sInscrire() {
             if(!oldSess) { errDiv.innerText = "Veuillez choisir votre ancienne session !"; errDiv.style.display = 'block'; return; }
             if(!activeSession) { errDiv.innerText = "Aucune session active configurée."; errDiv.style.display = 'block'; return; }
             
-            let etu = etudiants.find(e => e.code === codeAncien);
-            if(!etu) { errDiv.innerText = "Code introuvable. Si vous êtes nouveau, décochez la case."; errDiv.style.display = 'block'; return; }
+            // ✅ Chercher directement dans Supabase — ilike pour éviter problème CHAR(4)
+            const { data: ancRows } = await db.from('participants_affermissement').select('*').ilike('code', codeAncien.trim()).limit(1);
+            if(!ancRows || ancRows.length === 0) { errDiv.innerText = "Code introuvable. Si vous êtes nouveau, décochez la case."; errDiv.style.display = 'block'; return; }
+            const etu = ancRows[0];
             
             // Trouver l'ID de la session active dans Supabase
             const sessRows = await dbSelect('sessions_affermissement', { nom: activeSession });
@@ -717,7 +686,7 @@ async function sInscrire() {
             
             // Ajouter dans le pivot participant_sessions
             try {
-                await dbInsert('participant_sessions', { participant_id: etu._id, session_id: sessionId });
+                await dbInsert('participant_sessions', { participant_id: etu.id, session_id: sessionId });
             } catch(e) { /* déjà inscrit dans cette session, OK */ }
 
             // Mettre à jour local
@@ -756,16 +725,42 @@ async function sInscrire() {
                 errDiv.style.display = 'block'; return; 
             }
             
-            // Vérification doublons (depuis la liste déjà chargée depuis Supabase)
-            const nomComplet = n.toLowerCase() + pr.toLowerCase();
-            const doublonNom = etudiants.find(e => (e.nom.toLowerCase() + e.prenom.toLowerCase()) === nomComplet);
-            const doublonTel = tel ? etudiants.find(e => e.telephone && e.telephone === tel) : null;
-            if(doublonNom) { errDiv.innerText = "⚠️ " + n.toUpperCase() + " " + pr + " est déjà inscrit(e) !"; errDiv.style.display = 'block'; return; }
-            if(doublonTel) { errDiv.innerText = "⚠️ Ce numéro est déjà utilisé par " + doublonTel.nom.toUpperCase() + " " + doublonTel.prenom + " !"; errDiv.style.display = 'block'; return; }
+            // ✅ Vérification doublons directement dans Supabase — requêtes ciblées
+            const partTableCheck = currentMode === 'bapteme' ? 'participants_bapteme' : 'participants_affermissement';
             
-            // Générer un code unique de 4 chiffres
-            let code = Math.floor(1000 + Math.random() * 9000).toString();
-            while(etudiants.find(e => e.code === code)) { code = Math.floor(1000 + Math.random() * 9000).toString(); }
+            // Vérifier le nom+prénom (insensible à la casse)
+            const { data: doublonNomRows } = await db.from(partTableCheck)
+                .select('nom,prenom')
+                .ilike('nom', n)
+                .ilike('prenom', pr)
+                .limit(1);
+            if(doublonNomRows && doublonNomRows.length > 0) { 
+                errDiv.innerText = " " + n.toUpperCase() + " " + pr + " est déjà inscrit(e) !"; 
+                errDiv.style.display = 'block'; return; 
+            }
+            
+            // Vérifier le téléphone
+            if(tel) {
+                const { data: doublonTelRows } = await db.from(partTableCheck)
+                    .select('nom,prenom')
+                    .eq('telephone', tel)
+                    .limit(1);
+                if(doublonTelRows && doublonTelRows.length > 0) { 
+                    errDiv.innerText = " Ce numéro est déjà utilisé par " + doublonTelRows[0].nom.toUpperCase() + " " + doublonTelRows[0].prenom + " !"; 
+                    errDiv.style.display = 'block'; return; 
+                }
+            }
+            
+            // ✅ Code généré exclusivement par Supabase côté serveur — unique garanti
+            let code;
+            const fnCode = currentMode === 'affermissement' ? 'generer_code_unique_aff' : 'generer_code_unique_bap';
+            const { data: codeData, error: codeErr } = await db.rpc(fnCode);
+            if(codeErr || !codeData) {
+                errDiv.innerText = "Impossible de générer le code. Vérifiez votre connexion et réessayez.";
+                errDiv.style.display = 'block';
+                return;
+            }
+            code = codeData;
 
             if(currentMode === 'affermissement') {
                 // Trouver l'ID de la session active
@@ -773,21 +768,37 @@ async function sInscrire() {
                 if(sessRows.length === 0) { errDiv.innerText = "Session active introuvable."; errDiv.style.display = 'block'; return; }
                 const sessionId = sessRows[0].id;
 
-                // ✅ INSÉRER DANS SUPABASE — participants_affermissement
-                const inserted = await dbInsert('participants_affermissement', {
-                    code: code,
-                    nom: n,
-                    postnom: document.getElementById('postnom').value.trim() || null,
-                    prenom: pr,
-                    telephone: tel,
-                    telephone_urgence: document.getElementById('tel-urgence').value.trim(),
-                    adresse: document.getElementById('adresse').value.trim(),
-                    etat_civil: ec,
-                    profession: prof,
-                    salle: document.getElementById('salle').value || null,
-                    photo_url: photoBase64 || null,
-                    session_active_id: sessionId
-                });
+                // ✅ Insérer dans Supabase — le code est déjà unique garanti
+                let inserted = null;
+                let tentatives = 0;
+                while(!inserted && tentatives < 5) {
+                    tentatives++;
+                    if(tentatives > 1) {
+                        // Regénérer un code si nécessaire (fallback)
+                        const { data: cd } = await db.rpc('generer_code_unique_aff');
+                        if(cd) code = cd;
+                    }
+                    try {
+                        inserted = await dbInsert('participants_affermissement', {
+                            code: code,
+                            nom: n,
+                            postnom: document.getElementById('postnom').value.trim() || null,
+                            prenom: pr,
+                            telephone: tel,
+                            telephone_urgence: document.getElementById('tel-urgence').value.trim(),
+                            adresse: document.getElementById('adresse').value.trim(),
+                            etat_civil: ec,
+                            profession: prof,
+                            salle: document.getElementById('salle').value || null,
+                            photo_url: photoBase64 || null,
+                            session_active_id: sessionId
+                        });
+                    } catch(eIns) {
+                        if(eIns.code === '23505') continue;
+                        throw eIns;
+                    }
+                }
+                if(!inserted) throw new Error("Impossible de créer le participant. Réessayez.");
 
                 // Ajouter dans le pivot participant_sessions
                 await dbInsert('participant_sessions', { participant_id: inserted.id, session_id: sessionId });
@@ -808,17 +819,32 @@ async function sInscrire() {
                 afficherResultatInscription(n, pr, code);
 
             } else if(currentMode === 'bapteme') {
-                // ✅ INSÉRER DANS SUPABASE — participants_bapteme
-                const inserted = await dbInsert('participants_bapteme', {
-                    code: code,
-                    nom: n,
-                    postnom: document.getElementById('postnom').value.trim() || null,
-                    prenom: pr,
-                    telephone: tel,
-                    adresse: document.getElementById('adresse-bap').value.trim(),
-                    etat_civil: ec,
-                    profession: prof
-                });
+                // ✅ Code généré par Supabase côté serveur — unique garanti
+                let inserted = null;
+                let tentatives = 0;
+                while(!inserted && tentatives < 5) {
+                    tentatives++;
+                    if(tentatives > 1) {
+                        const { data: cd } = await db.rpc('generer_code_unique_bap');
+                        if(cd) code = cd;
+                    }
+                    try {
+                        inserted = await dbInsert('participants_bapteme', {
+                            code: code,
+                            nom: n,
+                            postnom: document.getElementById('postnom').value.trim() || null,
+                            prenom: pr,
+                            telephone: tel,
+                            adresse: document.getElementById('adresse-bap').value.trim(),
+                            etat_civil: ec,
+                            profession: prof
+                        });
+                    } catch(eInsert) {
+                        if(eInsert.code === '23505') continue;
+                        throw eInsert;
+                    }
+                }
+                if(!inserted) throw new Error("Impossible de créer le participant. Réessayez.");
 
                 // Mise à jour cache local
                 let etuObj = { 
@@ -885,26 +911,89 @@ async function creerDossier() {
 function refreshDossiersList() {
     if(currentMode === 'cote') {
         document.getElementById('liste-dossiers-admin').innerHTML = sessionsCotes.map((s, idx) => {
-            let sousHtml = (s.sous||[]).map((sd, sdi) => `<div style="margin-left:20px;font-size:12px;color:#555;display:flex;justify-content:space-between;border-bottom:1px dashed #eee;padding:2px 0;"><span>- ${sd}</span> <button type="button" style="background:none;color:red;border:none;cursor:pointer;" onclick="supprimerSousDossier(${idx}, ${sdi})">✕</button></div>`).join('');
-            return `<div style="border:1px solid #ddd;padding:5px;margin-bottom:5px;border-radius:5px;"><div style="display:flex;justify-content:space-between;"><b>${s.nom}</b> <button type="button" style="background:#dc3545;color:white;border:none;border-radius:3px;padding:2px 5px;" onclick="supprimerDossierCote(${idx})">✕</button></div>${sousHtml}
-                <div style="display:flex;gap:5px;margin-top:5px;"><input type="text" id="sous-nom-${idx}" placeholder="Nouv. sous-dossier" style="padding:4px;font-size:11px;"><button type="button" onclick="ajouterSousDossier(${idx})" style="padding:4px;font-size:11px;background:#17a2b8;color:white;border:none;border-radius:3px;">+ Ajouter</button></div></div>`;
+            let sousHtml = (s.sous||[]).map((sd, sdi) => 
+                `<div style="margin-left:20px;font-size:12px;color:#555;display:flex;justify-content:space-between;border-bottom:1px dashed #eee;padding:2px 0;">
+                 <span>- ${sd}</span>
+                 <button type="button" style="background:none;color:red;border:none;cursor:pointer;" data-sidx="${idx}" data-sdidx="${sdi}" onclick="supprimerSousDossier(parseInt(this.dataset.sidx), parseInt(this.dataset.sdidx))">✕</button>
+                 </div>`
+            ).join('');
+            return `<div style="border:1px solid #ddd;padding:5px;margin-bottom:5px;border-radius:5px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <b>${s.nom}</b>
+                    <div style="display:flex;gap:4px;">
+                        <button type="button" style="background:#17a2b8;color:white;border:none;border-radius:3px;padding:2px 6px;font-size:12px;" data-idx="${idx}" onclick="renommerDossierCote(parseInt(this.dataset.idx))">✏️</button>
+                        <button type="button" style="background:#dc3545;color:white;border:none;border-radius:3px;padding:2px 5px;" data-idx="${idx}" onclick="supprimerDossierCote(parseInt(this.dataset.idx))">✕</button>
+                    </div>
+                </div>
+                ${sousHtml}
+                <div style="display:flex;gap:5px;margin-top:5px;">
+                    <input type="text" id="sous-nom-${idx}" placeholder="Nouv. sous-dossier" style="padding:4px;font-size:11px;">
+                    <button type="button" data-idx="${idx}" onclick="ajouterSousDossier(parseInt(this.dataset.idx))" style="padding:4px;font-size:11px;background:#17a2b8;color:white;border:none;border-radius:3px;">+ Ajouter</button>
+                </div>
+            </div>`;
         }).join('');
     } else {
-        document.getElementById('liste-dossiers-admin').innerHTML = sessions.map(s => `<div style="display:flex;justify-content:space-between;padding:5px;border-bottom:1px solid #eee;"><span><b>${s}</b></span><button type="button" style="background:#dc3545;color:white;border:none;border-radius:3px;padding:2px 5px;" onclick="supprimerDossier('${s.replace(/'/g,"\\'")}')">✕</button></div>`).join('');
+        document.getElementById('liste-dossiers-admin').innerHTML = sessions.map((s, idx) => 
+            `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px;border-bottom:1px solid #eee;">
+             <span><b>${s}</b></span>
+             <div style="display:flex;gap:4px;">
+                 <button type="button" style="background:#17a2b8;color:white;border:none;border-radius:3px;padding:2px 6px;font-size:12px;" data-idx="${idx}" onclick="renommerDossier(parseInt(this.dataset.idx))">✏️</button>
+                 <button type="button" style="background:#dc3545;color:white;border:none;border-radius:3px;padding:2px 5px;" data-idx="${idx}" onclick="supprimerDossier(parseInt(this.dataset.idx))">✕</button>
+             </div>
+             </div>`
+        ).join('');
     }
 }
 
-async function supprimerDossier(nom) { 
-    if(!confirm("Supprimer « "+nom+" » ?")) return;
+async function supprimerDossier(idx) {
+    const nom = sessions[idx];
+    if(!nom) return;
+    if(!confirm("Supprimer « "+nom+" » ? Toutes les présences liées seront aussi supprimées.")) return;
     try {
         const table = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
         await dbDelete(table, { nom: nom });
-        sessions = sessions.filter(s => s !== nom); 
-        delete historique[nom]; 
-        sauvegarderDonneesLocal(); 
-        updateSessionSelect(); 
+        sessions.splice(idx, 1);
+        delete historique[nom];
+        sauvegarderDonneesLocal();
+        updateSessionSelect();
         refreshDossiersList();
-    } catch(e) { alert("Erreur : " + e.message); }
+    } catch(e) { alert("Erreur suppression : " + e.message); }
+}
+
+async function renommerDossier(idx) {
+    const ancienNom = sessions[idx];
+    if(!ancienNom) return;
+    const nouveauNom = prompt("Nouveau nom pour « " + ancienNom + " » :", ancienNom);
+    if(!nouveauNom || nouveauNom.trim() === ancienNom) return;
+    const n = nouveauNom.trim();
+    if(sessions.includes(n)) return alert("Ce nom existe déjà !");
+    try {
+        const table = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
+        await dbUpdate(table, { nom: ancienNom }, { nom: n });
+        if(historique[ancienNom]) { historique[n] = historique[ancienNom]; delete historique[ancienNom]; }
+        sessions[idx] = n;
+        sauvegarderDonneesLocal();
+        updateSessionSelect();
+        refreshDossiersList();
+    } catch(e) { alert("Erreur renommage : " + e.message); }
+}
+
+async function renommerDossierCote(idx) {
+    const ancienNom = sessionsCotes[idx].nom;
+    const nouveauNom = prompt("Nouveau nom pour « " + ancienNom + " » :", ancienNom);
+    if(!nouveauNom || nouveauNom.trim() === ancienNom) return;
+    const n = nouveauNom.trim();
+    if(sessionsCotes.some(s => s.nom === n)) return alert("Ce nom existe déjà !");
+    try {
+        await dbUpdate('lecons_affermissement', { nom: ancienNom }, { nom: n });
+        // Mettre à jour cotesData et accuseTPData
+        if(cotesData[ancienNom]) { cotesData[n] = cotesData[ancienNom]; delete cotesData[ancienNom]; }
+        if(accuseTPData[ancienNom]) { accuseTPData[n] = accuseTPData[ancienNom]; delete accuseTPData[ancienNom]; }
+        sessionsCotes[idx].nom = n;
+        sauvegarderDonneesLocal();
+        updateSelectCotes();
+        refreshDossiersList();
+    } catch(e) { alert("Erreur renommage : " + e.message); }
 }
 
 async function supprimerDossierCote(idx) { 
@@ -1096,78 +1185,74 @@ function fermerLightbox(e) {
 
 async function validerPresence(code) {
     code = code ? code.trim() : ""; if(!code) return alert("Entrez un code !");
-    const etu = etudiants.find(e => e.code === code); if(!etu) return alert("Code Inconnu !");
-    
-    if(currentMode === 'affermissement' && filtreAdminPromo !== "ALL") {
-        if(etu.sessionInscription !== filtreAdminPromo && !(etu.promos && etu.promos.includes(filtreAdminPromo))) {
-            return alert("Ce participant n'appartient pas à la session filtrée (" + filtreAdminPromo + ").");
-        }
-    }
 
-    let curSess = document.getElementById('select-session').value; if(!curSess) return alert("Aucune session sélectionnée");
-    // ✅ Session active depuis Supabase
+    let curSess = document.getElementById('select-session').value; 
+    if(!curSess) return alert("Aucune session sélectionnée");
     let activePromo = (currentMode === 'affermissement') ? (await getActiveSession()) : '';
 
     try {
-        // Trouver l'ID de la leçon
-        const table = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
-        const leconRows = await dbSelect(table, { nom: curSess });
-        if(leconRows.length === 0) throw new Error("Leçon introuvable dans la base");
-
-        // Trouver l'ID du participant
+        // ✅ Chercher le participant directement dans Supabase
+        // .trim() sur la comparaison pour éviter les espaces CHAR(4) de PostgreSQL
         const partTable = currentMode === 'bapteme' ? 'participants_bapteme' : 'participants_affermissement';
-        const partRows = await dbSelect(partTable, { code: code });
-        if(partRows.length === 0) throw new Error("Participant introuvable dans la base");
+        const { data: partRows } = await db.from(partTable).select('*').ilike('code', code.trim()).limit(1);
+        if(!partRows || partRows.length === 0) {
+            alert(" Code Inconnu ! Ce code n'existe pas dans la base de données.");
+            return;
+        }
+        const etu = partRows[0];
+
+        // Vérification session filtrée (affermissement seulement) — depuis Supabase
+        if(currentMode === 'affermissement' && filtreAdminPromo !== "ALL") {
+            const sessFiltre = await dbSelect('sessions_affermissement', { nom: filtreAdminPromo });
+            if(sessFiltre.length > 0) {
+                const pivot = await dbSelect('participant_sessions', { participant_id: etu.id, session_id: sessFiltre[0].id });
+                if(pivot.length === 0) return alert("Ce participant n'appartient pas à la session filtrée (" + filtreAdminPromo + ").");
+            }
+        }
+
+        // Trouver l'ID de la leçon dans Supabase
+        const leconTable = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
+        const leconRows = await dbSelect(leconTable, { nom: curSess });
+        if(leconRows.length === 0) throw new Error("Leçon introuvable dans la base. Vérifiez que la leçon existe.");
 
         // Trouver l'ID encadrant
         const encRows = await dbSelect('encadrants', { prenom: encadrantActuel });
         const encId = encRows.length > 0 ? encRows[0].id : null;
 
-        // Date du jour en format ISO YYYY-MM-DD
-        const today = new Date();
-        const dateISO = today.toISOString().split('T')[0];
+        // ✅ CORRECTION DATE : utiliser la date locale, pas UTC
+        // new Date().toISOString() donne UTC ce qui peut donner une mauvaise date en Afrique (+2h)
+        const now = new Date();
+        const dateISO = now.getFullYear() + '-' + 
+                        String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+                        String(now.getDate()).padStart(2, '0');
 
-        // Trouver l'ID session active (affermissement seulement)
+        // Trouver l'ID session active
         let sessionId = null;
         if(currentMode === 'affermissement' && activePromo) {
             const sessRows = await dbSelect('sessions_affermissement', { nom: activePromo });
             if(sessRows.length > 0) sessionId = sessRows[0].id;
         }
 
-        // ✅ INSÉRER DANS SUPABASE — la contrainte UNIQUE côté base bloque les doublons proprement
+        // ✅ INSÉRER dans Supabase
         const presTable = currentMode === 'bapteme' ? 'presences_bapteme' : 'presences_affermissement';
-        const presData = {
-            participant_id: partRows[0].id,
-            lecon_id: leconRows[0].id,
-            date_presence: dateISO,
-            encadrant_id: encId
-        };
+        const presData = { participant_id: etu.id, lecon_id: leconRows[0].id, date_presence: dateISO, encadrant_id: encId };
         if(currentMode === 'affermissement') presData.session_id = sessionId;
 
         const { error } = await db.from(presTable).insert(presData);
         
         if(error) {
-            // Code PostgreSQL 23505 = violation de contrainte UNIQUE = déjà présent aujourd'hui
             if(error.code === '23505') {
-                alert("⚠️ " + etu.nom.toUpperCase() + " " + etu.prenom + " est déjà enregistré aujourd'hui !");
+                // Présence déjà enregistrée aujourd'hui — message clair
+                alert("ℹ️ " + etu.nom.toUpperCase() + " " + etu.prenom + "\n\nPrésence déjà prise pour aujourd'hui.\n(Si ce n'est pas normal, vérifiez le relevé individuel.)");
             } else {
                 alert("Erreur présence : " + error.message);
             }
             return;
         }
 
-        // Mise à jour cache local
-        if(!historique[curSess]) historique[curSess] = [];
-        historique[curSess].push({ code: code, date: getDuJour(), encadrant: encadrantActuel, promo: activePromo });
-        sauvegarderDonneesLocal();
-        
-        // Arrêter le scanner après un scan réussi
+        // Arrêter le scanner après scan réussi
         if(html5QrCode) { 
-            try { 
-                html5QrCode.stop(); 
-                document.getElementById('btn-start').style.display='block'; 
-                document.getElementById('btn-stop').style.display='none'; 
-            } catch(e2){} 
+            try { html5QrCode.stop(); document.getElementById('btn-start').style.display='block'; document.getElementById('btn-stop').style.display='none'; } catch(e2){} 
         }
         
         alert("✔ Présence validée : " + etu.nom.toUpperCase() + " " + etu.prenom);
@@ -1181,6 +1266,10 @@ async function validerPresence(code) {
 // =========== RELEVES & GESTION PARTICIPANT ===========
 function genererInfoEditable(etu) {
     return `<div class="releve-contact" style="text-align:left;">
+        <div style="background:#006070;color:white;border-radius:8px;padding:8px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:12px;font-weight:bold;">CODE &amp; QR MANUEL</span>
+            <span style="font-size:1.6em;font-weight:bold;letter-spacing:8px;">${etu.code}</span>
+        </div>
         <div><span class="label">Nom :</span> <input class="edit-field" id="edit-nom-${etu.code}" value="${etu.nom}" style="width:110px;"> <input class="edit-field" id="edit-prenom-${etu.code}" value="${etu.prenom}" style="width:110px;"></div>
         <div><span class="label"> Tél :</span> <input class="edit-field" id="edit-tel-${etu.code}" value="${etu.telephone||''}" style="width:120px;"></div>
         <div><span class="label"> État civil :</span>
@@ -1233,7 +1322,7 @@ function getJourNom(dateStr) { try { let p = dateStr.split('/'); return joursNom
 function genererReleve(code) {
     const etu = etudiants.find(e => e.code === code); if(!etu) return;
     let ph = etu.photo ? `<img src="${etu.photo}" class="releve-photo" onclick="ouvrirLightbox('${etu.photo}', '${etu.nom.toUpperCase()} ${etu.prenom}')">` : '';
-    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - PRÉSENCES</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p></div>`;
+    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - PRÉSENCES</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;"> ${etu.code}</div></div>`;
     const activePromo = (currentMode === 'affermissement') ? (localStorage.getItem(KEY_ACTIVE_PROMO) || '') : '';
     sessions.forEach(s => {
         let lpAll = historique[s] || [];
@@ -1253,7 +1342,7 @@ function genererReleve(code) {
 function genererReleveCote(code) {
     const etu = etudiants.find(e => e.code === code); if(!etu) return;
     let ph = etu.photo ? `<img src="${etu.photo}" class="releve-photo" onclick="ouvrirLightbox('${etu.photo}', '${etu.nom.toUpperCase()} ${etu.prenom}')">` : '';
-    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p></div><h4 style="color:#006070;">📝 Détail par TP :</h4>`;
+    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;">🔑 ${etu.code}</div></div><h4 style="color:#006070;">📝 Détail par TP :</h4>`;
     sessionsCotes.forEach(st => {
         html += `<div style="background:#fff;border:1px solid #ddd;padding:8px;border-radius:5px;margin:5px 0;"><b style="color:#006070;">${st.nom}</b>`;
         if(st.sous && st.sous.length > 0) {
@@ -1417,11 +1506,73 @@ function ouvrirVueGlobaleCote() {
 function fermerVueGlobale() { document.getElementById('modal-vue-globale').style.display = 'none'; }
 
 function telechargerPDF(elementId, nomFichier) {
-    const el = document.getElementById(elementId); const btns = document.querySelectorAll('.btn-pdf, .close-report-btn, .btn-close-globale, .btn-save-edit'); btns.forEach(b => b.style.display = 'none');
-    html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }).then(canvas => {
-        btns.forEach(b => b.style.display = ''); const { jsPDF } = window.jspdf;
-        const imgW = canvas.width; const imgH = canvas.height; const orientation = imgW > imgH ? 'l' : 'p';
-        const pdf = new jsPDF(orientation, 'mm', 'a4'); const pageW = pdf.internal.pageSize.getWidth() - 10; const pageH = pdf.internal.pageSize.getHeight() - 10;
-        const ratio = Math.min(pageW / imgW, pageH / imgH); pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 5, 5, imgW*ratio, imgH*ratio); pdf.save(nomFichier + '.pdf');
-    }).catch(() => { btns.forEach(b => b.style.display = ''); alert("Erreur PDF"); });
+    const el = document.getElementById(elementId);
+    const btns = document.querySelectorAll('.btn-pdf, .close-report-btn, .btn-close-globale, .btn-save-edit');
+    btns.forEach(b => b.style.display = 'none');
+    
+    // ✅ CORRECTION PDF : sauvegarder et forcer la taille réelle de l'élément
+    // pour capturer tout le contenu même hors écran (problème sur téléphone)
+    const prevOverflow = el.style.overflow;
+    const prevMaxHeight = el.style.maxHeight;
+    const prevHeight = el.style.height;
+    el.style.overflow = 'visible';
+    el.style.maxHeight = 'none';
+    el.style.height = 'auto';
+
+    // Faire défiler vers le haut avant la capture
+    window.scrollTo(0, 0);
+    
+    html2canvas(el, { 
+        scale: 2, 
+        useCORS: true, 
+        backgroundColor: '#ffffff',
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: el.scrollWidth,
+        windowHeight: el.scrollHeight,
+        width: el.scrollWidth,
+        height: el.scrollHeight
+    }).then(canvas => {
+        // Restaurer les styles
+        el.style.overflow = prevOverflow;
+        el.style.maxHeight = prevMaxHeight;
+        el.style.height = prevHeight;
+        btns.forEach(b => b.style.display = '');
+        
+        const { jsPDF } = window.jspdf;
+        const imgW = canvas.width;
+        const imgH = canvas.height;
+        
+        // Calculer le nombre de pages nécessaires
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pageW = pdf.internal.pageSize.getWidth() - 10;
+        const pageH = pdf.internal.pageSize.getHeight() - 10;
+        const ratio = pageW / imgW;
+        const imgHeightMM = imgH * ratio;
+        
+        if(imgHeightMM <= pageH) {
+            // Tout tient sur une page
+            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 5, 5, pageW, imgHeightMM);
+        } else {
+            // Plusieurs pages
+            let posY = 0;
+            while(posY < imgH) {
+                const sliceH = Math.min(pageH / ratio, imgH - posY);
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = imgW;
+                pageCanvas.height = sliceH;
+                pageCanvas.getContext('2d').drawImage(canvas, 0, posY, imgW, sliceH, 0, 0, imgW, sliceH);
+                if(posY > 0) pdf.addPage();
+                pdf.addImage(pageCanvas.toDataURL('image/png'), 'PNG', 5, 5, pageW, sliceH * ratio);
+                posY += sliceH;
+            }
+        }
+        pdf.save(nomFichier + '.pdf');
+    }).catch(() => {
+        el.style.overflow = prevOverflow;
+        el.style.maxHeight = prevMaxHeight;
+        el.style.height = prevHeight;
+        btns.forEach(b => b.style.display = '');
+        alert("Erreur PDF");
+    });
 }
