@@ -186,9 +186,15 @@ async function afficherSuiviParticipant() {
         // 2. Lire la session active depuis Supabase
         const activeSession = await getActiveSession();
 
-        // 3. Charger les leçons et sous-dossiers depuis Supabase
-        const { data: lecons } = await db.from('lecons_affermissement').select('*').order('ordre');
+        // 3. Charger UNIQUEMENT les leçons de type "cote" et leurs sous-dossiers
+        const { data: toutesLecons } = await db.from('lecons_affermissement').select('*').order('ordre');
         const { data: sousDoss } = await db.from('sous_dossiers_cote').select('*').order('ordre');
+        
+        // Filtrer pour garder seulement les leçons de côte
+        const idsAvecSd = new Set((sousDoss||[]).map(sd => sd.lecon_id));
+        const lecons = (toutesLecons||[]).filter(l => 
+            l.type === 'cote' || ((!l.type) && idsAvecSd.has(l.id))
+        );
 
         // 4. Charger les côtes du participant depuis Supabase
         const { data: cotesRows } = await db.from('cotes').select('*').eq('participant_id', etu.id);
@@ -237,7 +243,7 @@ async function inscrireEncadrantGlobal() {
     // Vérifier le mot de passe admin depuis Supabase
     const rows = await dbSelect('config_application', { cle: 'mot_de_passe_admin' });
     const mdpAdmin = rows.length > 0 ? rows[0].valeur : motDePasse;
-    if(m !== mdpAdmin) return alert("MDP Admin incorrect !");
+    if(m !== mdpAdmin) return alert("Mots de passe incorrect !");
 
     try {
         // Sauvegarder l'encadrant dans Supabase
@@ -341,8 +347,26 @@ async function chargerDonnees() {
         const sessActiveRow = sessRows.find(s => s.est_active === true);
         if(sessActiveRow) localStorage.setItem(KEY_ACTIVE_PROMO, sessActiveRow.nom);
 
-        // Leçons
-        sessions = lecons.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
+        // ✅ SÉPARATION CORRECTE : utiliser le champ "type" pour distinguer
+        // type = 'cote' ou NULL avec sous-dossiers → côte
+        // type = 'presence' ou NULL sans sous-dossiers → présence
+        // NULL = leçons créées avant la migration → on regarde si elles ont des sous-dossiers
+
+        const idsAvecSousDoss = new Set(sousDossiers.map(sd => sd.lecon_id));
+
+        const leconsPresence = lecons.filter(l => 
+            l.type === 'presence' || 
+            (l.type === null && !idsAvecSousDoss.has(l.id)) ||
+            (l.type === undefined && !idsAvecSousDoss.has(l.id))
+        );
+        const leconsCote = lecons.filter(l => 
+            l.type === 'cote' || 
+            (l.type === null && idsAvecSousDoss.has(l.id)) ||
+            (l.type === undefined && idsAvecSousDoss.has(l.id))
+        );
+
+        // sessions = leçons de présence uniquement
+        sessions = leconsPresence.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
         if(sessions.length === 0) sessions = ["LECON 1"];
 
         // Présences
@@ -359,14 +383,15 @@ async function chargerDonnees() {
             historique[nomLecon].push({ code: part.code, date: `${d}/${m}/${y}`, encadrant: '', promo: sess ? sess.nom : '' });
         }
 
-        // Sous-dossiers et structure côtes
-        sessionsCotes = lecons.map(l => ({
+        // sessionsCotes = leçons de type "cote" — gardées même sans sous-dossiers
+        sessionsCotes = leconsCote.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => ({
             nom: l.nom,
             sous: sousDossiers.filter(sd => sd.lecon_id === l.id)
                               .sort((a,b)=>(a.ordre||0)-(b.ordre||0))
                               .map(sd => sd.nom),
             _id: l.id
-        })).filter(sc => sc.sous.length > 0);
+        }));
+        // ✅ Plus de .filter(sc => sc.sous.length > 0) — une leçon côte reste visible même sans sous-dossiers
 
         // Côtes
         cotesData = {}; accuseTPData = {};
@@ -557,7 +582,7 @@ async function changerSessionActive() {
         await db.from('sessions_affermissement').update({ est_active: true }).eq('nom', nomSession);
         // 3. Sauvegarder aussi en local pour accès rapide
         localStorage.setItem(KEY_ACTIVE_PROMO, nomSession);
-        alert(" Session active mise à jour : " + nomSession + "\nTous les appareils verront maintenant cette session.");
+        alert(" Session active mise à jour : " + nomSession + "\nTous les appareils verront cette session.");
     } catch(e) {
         // En cas d'erreur Supabase, sauvegarder quand même en local
         localStorage.setItem(KEY_ACTIVE_PROMO, nomSession);
@@ -573,7 +598,7 @@ async function modifierCodeAcces() {
         await dbUpdate('config_application', { cle: cle }, { valeur: nouveau.trim() });
         if(currentMode === 'bapteme') localStorage.setItem(KEY_CODE_BAP, nouveau.trim());
         else localStorage.setItem(KEY_CODE_AFF_INSC, nouveau.trim());
-        document.getElementById('display-mdp-inscr').innerText = "MDP actuel Formulaire : " + nouveau.trim();
+        document.getElementById('display-mdp-inscr').innerText = "MDP Formulaire : " + nouveau.trim();
         alert("Code modifié avec succès !");
     } catch(e) { alert("Erreur : " + e.message); }
 }
@@ -888,17 +913,21 @@ function afficherResultatInscription(nom, prenom, code) {
 function toggleDossiers() { document.getElementById('gestion-dossiers').classList.toggle('hidden'); refreshDossiersList(); }
 
 async function creerDossier() {
-    const n = document.getElementById('nom-dossier').value.trim(); if(!n) return;
+    const n = document.getElementById('nom-dossier').value.trim(); 
+    if(!n) return alert("Entrez un nom !");
     try {
         if(currentMode === 'cote') {
-            // Créer une leçon affermissement dans Supabase
-            const inserted = await dbInsert('lecons_affermissement', { nom: n, ordre: sessionsCotes.length + 1 });
+            // ✅ Type "cote" — visible uniquement dans admin côte, PAS dans présences
+            const inserted = await dbInsert('lecons_affermissement', { nom: n, type: 'cote', ordre: sessionsCotes.length + 1 });
             sessionsCotes.push({ nom: n, sous: [], _id: inserted.id });
             updateSelectCotes();
+        } else if(currentMode === 'bapteme') {
+            await dbInsert('lecons_bapteme', { nom: n, ordre: sessions.length + 1 });
+            sessions.push(n);
+            updateSessionSelect();
         } else {
-            // Créer une leçon selon le mode
-            const table = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
-            await dbInsert(table, { nom: n, ordre: sessions.length + 1 });
+            // ✅ Type "presence" — visible uniquement dans admin affermissement, PAS dans côtes
+            const inserted = await dbInsert('lecons_affermissement', { nom: n, type: 'presence', ordre: sessions.length + 1 });
             sessions.push(n);
             updateSessionSelect();
         }
@@ -1210,9 +1239,21 @@ async function validerPresence(code) {
             }
         }
 
-        // Trouver l'ID de la leçon dans Supabase
+        // Trouver l'ID de la leçon dans Supabase — filtrer par type pour éviter conflits de nom
         const leconTable = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
-        const leconRows = await dbSelect(leconTable, { nom: curSess });
+        let leconRows;
+        if(currentMode === 'affermissement') {
+            // Chercher uniquement dans les leçons de présence
+            const { data: lr } = await db.from(leconTable).select('*').eq('nom', curSess).neq('type', 'cote').limit(1);
+            leconRows = lr || [];
+            // Fallback : si pas trouvé avec filtre type, chercher sans filtre (leçons sans type)
+            if(leconRows.length === 0) {
+                const { data: lr2 } = await db.from(leconTable).select('*').eq('nom', curSess).is('type', null).limit(1);
+                leconRows = lr2 || [];
+            }
+        } else {
+            leconRows = await dbSelect(leconTable, { nom: curSess });
+        }
         if(leconRows.length === 0) throw new Error("Leçon introuvable dans la base. Vérifiez que la leçon existe.");
 
         // Trouver l'ID encadrant
@@ -1296,6 +1337,7 @@ function genererInfoEditable(etu) {
 
 async function sauvegarderModifParticipant(code) {
     const idx = etudiants.findIndex(e => e.code === code); if(idx < 0) return;
+    const etu = etudiants[idx];
     const newNom = document.getElementById(`edit-nom-${code}`).value.trim();
     const newPrenom = document.getElementById(`edit-prenom-${code}`).value.trim();
     const newTel = document.getElementById(`edit-tel-${code}`).value.trim();
@@ -1304,7 +1346,8 @@ async function sauvegarderModifParticipant(code) {
 
     try {
         const table = currentMode === 'bapteme' ? 'participants_bapteme' : 'participants_affermissement';
-        await dbUpdate(table, { code: code }, { 
+        // ✅ CORRECTION : utiliser l'id UUID au lieu du code pour éviter tout risque de doublon
+        await dbUpdate(table, { id: etu._id || etu.id }, { 
             nom: newNom, prenom: newPrenom, telephone: newTel, 
             etat_civil: newEtat, profession: newProf 
         });
@@ -1342,7 +1385,7 @@ function genererReleve(code) {
 function genererReleveCote(code) {
     const etu = etudiants.find(e => e.code === code); if(!etu) return;
     let ph = etu.photo ? `<img src="${etu.photo}" class="releve-photo" onclick="ouvrirLightbox('${etu.photo}', '${etu.nom.toUpperCase()} ${etu.prenom}')">` : '';
-    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;">🔑 ${etu.code}</div></div><h4 style="color:#006070;">📝 Détail par TP :</h4>`;
+    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;"> ${etu.code}</div></div><h4 style="color:#006070;">📝 Détail par TP :</h4>`;
     sessionsCotes.forEach(st => {
         html += `<div style="background:#fff;border:1px solid #ddd;padding:8px;border-radius:5px;margin:5px 0;"><b style="color:#006070;">${st.nom}</b>`;
         if(st.sous && st.sous.length > 0) {
