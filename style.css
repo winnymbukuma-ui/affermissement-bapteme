@@ -92,7 +92,7 @@ th { background: #006070; color: white; text-align: center; font-size: 11px; }
 .accueil-card h1 { color: #006070; font-size: 1.8em; margin-bottom: 5px; }
 .accueil-card .salutation { font-size: 1.6em; color: #333; margin: 15px 0; font-weight: bold; }
 
-.accueil-btns-container { display: flex; flex-direction: row; gap: 15px; margin-top: 25px; }
+.accueil-btns-container { display: flex; flex-direction: row; gap: 8px; margin-top: 25px; flex-wrap: wrap; justify-content: center; }
 .accueil-btn {
     flex: 1; padding: 20px 10px; border: none; border-radius: 12px;
     font-size: 1.2em; font-weight: bold; cursor: pointer; transition: all 0.3s; display:flex; justify-content:center; align-items:center;
