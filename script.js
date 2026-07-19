@@ -524,6 +524,8 @@ async function lancerSessionAdmin(prenom, pushState = true) {
         const btnScan = document.getElementById('btn-start');
         if(btnScan) btnScan.style.display = 'none';
         document.getElementById('admin-title').innerText = " Admin - MERCREDI";
+        let btnNew = document.querySelector('[onclick="togglePromos()"]');
+        if(btnNew) btnNew.style.display = 'none';
     }
 
     //  Lire le code d'accès depuis Supabase
