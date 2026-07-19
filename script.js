@@ -33,6 +33,11 @@ let encadrantActuel     = "";
 let encadrantAuthentifie = false;
 let filtreAdminPromo    = "ALL"; 
 
+// =========== MERCREDI ===========
+let etudiantsMercredi   = [];   // copie des participants affermissement
+let presencesMercredi   = {};   // { 'lecon_nom': [{code, date}] }
+let sessionsMercredi    = [];   // liste des leçons mercredi
+
 const joursNoms = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
 //  Toujours la date du jour réelle, même si la page est ouverte depuis plusieurs heures
 function getDuJour() { return new Date().toLocaleDateString('fr-FR'); }
@@ -86,6 +91,24 @@ function initAccueil() {
     document.getElementById('salutation').innerText = h < 12 ? " Bonjour !" : (h < 18 ? " Bonne après-midi !" : " Bonsoir !");
     //  Réveiller Supabase dès l'ouverture (évite la mise en pause de 7 jours)
     setTimeout(async () => { try { await db.from('config_application').select('cle').limit(1); } catch(e) {} }, 500);
+    // ✅ Injecter bouton Mercredi dynamiquement dans le menu encadrant
+    injecterBoutonMercredi();
+}
+
+function injecterBoutonMercredi() {
+    const container = document.getElementById('accueil-encadrant-btns');
+    if(!container || document.getElementById('btn-mercredi-admin')) return;
+    // Trouver le bouton retour ⬅️ et insérer avant lui
+    const btnRetour = [...container.querySelectorAll('button')].find(b => b.innerText.includes('⬅'));
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'btn-mercredi-admin';
+    btn.className = 'accueil-btn';
+    btn.style.cssText = 'background:#5a4fcf;color:white;';
+    btn.innerText = 'Mercredi';
+    btn.onclick = choisirMercredi;
+    if(btnRetour) container.insertBefore(btn, btnRetour);
+    else container.appendChild(btn);
 }
 initAccueil();
 
@@ -128,6 +151,9 @@ function changerVue(vue, push = true) {
             remplirSessionsInscription();
         }
     } else if (vue === 'admin') {
+        if (!encadrantAuthentifie) { changerVue('accueil-main', false); return; }
+        document.getElementById('section-admin').classList.remove('hidden');
+    } else if (vue === 'mercredi-admin') {
         if (!encadrantAuthentifie) { changerVue('accueil-main', false); return; }
         document.getElementById('section-admin').classList.remove('hidden');
     } else if (vue === 'resultat') {
@@ -285,6 +311,12 @@ function choisirAdmin(mode) {
     changerVue('admin'); 
 }
 
+async function choisirMercredi() {
+    currentMode = 'mercredi';
+    lancerSessionAdmin(encadrantActuel);
+    changerVue('mercredi-admin');
+}
+
 // =========== DATA GESTION — Charge depuis Supabase + cache local ===========
 async function chargerDonnees() {
     if(currentMode === 'bapteme') {
@@ -314,6 +346,46 @@ async function chargerDonnees() {
             const dateStr = pr.date_presence.split('T')[0];
             const [y,m,d] = dateStr.split('-');
             historique[nomLecon].push({ code: part.code, date: `${d}/${m}/${y}`, encadrant: '' });
+        }
+
+    } else if(currentMode === 'mercredi') {
+        // Charger participants affermissement + présences mercredi
+        const sessActNom = await getActiveSession();
+        const [parts, sessRows, lecons, presences] = await Promise.all([
+            dbSelect('participants_affermissement'),
+            dbSelect('sessions_affermissement'),
+            db.from('lecons_affermissement').select('*').eq('type', 'mercredi').then(r => r.data || []),
+            dbSelect('presences_mercredi')
+        ]);
+
+        const sessActive = sessRows.find(s => s.est_active === true);
+
+        etudiants = parts.map(p => {
+            const sa = sessRows.find(s => s.id === p.session_active_id);
+            return {
+                code: p.code, nom: p.nom, postnom: p.postnom || '', prenom: p.prenom,
+                telephone: p.telephone, adresse: p.adresse, etatCivil: p.etat_civil,
+                profession: p.profession, telUrgence: p.telephone_urgence || '',
+                salle: p.salle || '', photo: p.photo_url || '',
+                sessionInscription: sa ? sa.nom : '',
+                promos: sa ? [sa.nom] : [],
+                _id: p.id
+            };
+        });
+
+        sessions = lecons.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
+        if(sessions.length === 0) sessions = ["MERCREDI 1"];
+
+        historique = {};
+        for(const pr of presences) {
+            const lecon = lecons.find(l => l.id === pr.lecon_id);
+            const nomLecon = lecon ? lecon.nom : sessions[0];
+            const part = etudiants.find(e => e._id === pr.participant_id);
+            if(!part) continue;
+            if(!historique[nomLecon]) historique[nomLecon] = [];
+            const dateStr = pr.date_presence.split('T')[0];
+            const [y,m,d] = dateStr.split('-');
+            historique[nomLecon].push({ code: part.code, date: `${d}/${m}/${y}`, encadrant: '', promo: sessActive ? sessActive.nom : '' });
         }
 
     } else if(currentMode === 'affermissement' || currentMode === 'cote') {
@@ -441,9 +513,18 @@ async function lancerSessionAdmin(prenom, pushState = true) {
     document.getElementById('admin-title').innerText = " Admin - " + currentMode.toUpperCase();
     document.querySelectorAll('.affermissement-only').forEach(el => el.style.display = estAff ? 'block' : 'none');
 
+    const estMercredi = (currentMode === 'mercredi');
     document.getElementById('btn-delete-all-bap').style.display  = estBapteme ? 'inline-block' : 'none';
-    document.getElementById('btn-changer-mdp-inscr').style.display = estCote ? 'none' : 'inline-block';
+    document.getElementById('btn-changer-mdp-inscr').style.display = (estCote || estMercredi) ? 'none' : 'inline-block';
     document.getElementById('btn-changer-mdp-admin').style.display = estAff ? 'inline-block' : 'none';
+    // Masquer suppression participant en mode mercredi
+    if(estMercredi) {
+        const btnSuppr = document.getElementById('btn-toggle-suppr');
+        if(btnSuppr) btnSuppr.style.display = 'none';
+        const btnScan = document.getElementById('btn-start');
+        if(btnScan) btnScan.style.display = 'none';
+        document.getElementById('admin-title').innerText = " Admin - MERCREDI";
+    }
 
     //  Lire le code d'accès depuis Supabase
     if(!estCote) {
@@ -511,6 +592,7 @@ function syncFiltreDropdown() {
     else { selFiltre.value = "ALL"; filtreAdminPromo = "ALL"; }
 }
 function getEtudiantsFiltres() {
+    if(currentMode === 'mercredi') return etudiants;
     if(currentMode === 'bapteme') return etudiants;
     if(filtreAdminPromo === "ALL") return etudiants;
     return etudiants.filter(e => e.sessionInscription === filtreAdminPromo || (e.promos && e.promos.includes(filtreAdminPromo)));
@@ -1241,8 +1323,16 @@ async function validerPresence(code) {
 
         // Trouver l'ID de la leçon dans Supabase — filtrer par type pour éviter conflits de nom
         const leconTable = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
+        const presTable2 = currentMode === 'mercredi' ? 'presences_mercredi' : (currentMode === 'bapteme' ? 'presences_bapteme' : 'presences_affermissement');
         let leconRows;
-        if(currentMode === 'affermissement') {
+        if(currentMode === 'mercredi') {
+            const { data: lr } = await db.from('lecons_affermissement').select('*').eq('nom', curSess).eq('type', 'mercredi').limit(1);
+            leconRows = lr || [];
+            if(leconRows.length === 0) {
+                const { data: lr2 } = await db.from('lecons_affermissement').select('*').eq('nom', curSess).limit(1);
+                leconRows = lr2 || [];
+            }
+        } else if(currentMode === 'affermissement') {
             // Chercher uniquement dans les leçons de présence
             const { data: lr } = await db.from(leconTable).select('*').eq('nom', curSess).neq('type', 'cote').limit(1);
             leconRows = lr || [];
@@ -1261,11 +1351,20 @@ async function validerPresence(code) {
         const encId = encRows.length > 0 ? encRows[0].id : null;
 
         // ✅ CORRECTION DATE : utiliser la date locale, pas UTC
-        // new Date().toISOString() donne UTC ce qui peut donner une mauvaise date en Afrique (+2h)
         const now = new Date();
-        const dateISO = now.getFullYear() + '-' + 
+        let dateISO = now.getFullYear() + '-' + 
                         String(now.getMonth() + 1).padStart(2, '0') + '-' + 
                         String(now.getDate()).padStart(2, '0');
+        // En mode mercredi : forcer la date au mercredi de la semaine courante
+        if(currentMode === 'mercredi') {
+            const jour = now.getDay(); // 0=dim, 3=mer, 6=sam
+            const diffVersLundi = (jour === 0) ? -6 : 1 - jour;
+            const lundi = new Date(now); lundi.setDate(now.getDate() + diffVersLundi);
+            const mercredi = new Date(lundi); mercredi.setDate(lundi.getDate() + 2);
+            dateISO = mercredi.getFullYear() + '-' +
+                      String(mercredi.getMonth()+1).padStart(2,'0') + '-' +
+                      String(mercredi.getDate()).padStart(2,'0');
+        }
 
         // Trouver l'ID session active
         let sessionId = null;
@@ -1275,9 +1374,10 @@ async function validerPresence(code) {
         }
 
         // ✅ INSÉRER dans Supabase
-        const presTable = currentMode === 'bapteme' ? 'presences_bapteme' : 'presences_affermissement';
+        const presTable = currentMode === 'mercredi' ? 'presences_mercredi' : (currentMode === 'bapteme' ? 'presences_bapteme' : 'presences_affermissement');
         const presData = { participant_id: etu.id, lecon_id: leconRows[0].id, date_presence: dateISO, encadrant_id: encId };
         if(currentMode === 'affermissement') presData.session_id = sessionId;
+        if(currentMode === 'mercredi' && sessionId) presData.session_id = sessionId;
 
         const { error } = await db.from(presTable).insert(presData);
         
@@ -1370,6 +1470,18 @@ function genererReleve(code) {
     sessions.forEach(s => {
         let lpAll = historique[s] || [];
         let lp = (currentMode === 'affermissement' && activePromo) ? lpAll.filter(p => !p.promo || p.promo === activePromo) : lpAll;
+        // ✅ CORRECTION SAMEDI : rattacher samedi au dimanche précédent dans le relevé
+        if(currentMode === 'affermissement') {
+            lp = lp.map(p => {
+                const parts = p.date.split('/');
+                const dateObj = new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
+                if(dateObj.getDay() === 6) {
+                    const dim = new Date(dateObj); dim.setDate(dateObj.getDate() - 6);
+                    return { ...p, date: String(dim.getDate()).padStart(2,'0')+'/'+String(dim.getMonth()+1).padStart(2,'0')+'/'+dim.getFullYear() };
+                }
+                return p;
+            });
+        }
         const du = [...new Set(lp.map(p => p.date))].sort((a,b) => { let [ja,ma,aa]=a.split('/'); let [jb,mb,ab]=b.split('/'); return new Date(aa,ma-1,ja) - new Date(ab,mb-1,jb); });
         const dp = lp.filter(p => p.code === code); const pc = du.length>0 ? Math.round((dp.length/du.length)*100) : 0;
         if(du.length > 0) {
@@ -1483,7 +1595,40 @@ function getCouleurPourcentage(pct) { if (pct >= 80) return "background-color: #
 async function ouvrirVueGlobale() {
     // ✅ Recharger depuis Supabase pour avoir toutes les données à jour
     await chargerDonnees();
-    if(currentMode === 'cote') ouvrirVueGlobaleCote(); else ouvrirVueGlobalePresence();
+    injecterBoutonExcel(); // ✅ Crée le bouton Excel dynamiquement (rien à toucher dans le HTML)
+    if(currentMode === 'cote') ouvrirVueGlobaleCote(); 
+    else if(currentMode === 'mercredi') ouvrirVueGlobaleMercredi();
+    else ouvrirVueGlobalePresence();
+}
+
+// ✅ Insère le bouton "Télécharger Excel" dans le header de la modale, créé entièrement en JS
+function injecterBoutonExcel() {
+    const header = document.querySelector('#modal-vue-globale .header-vue-globale > div');
+    if(!header) return;
+    if(document.getElementById('btn-excel-dynamique')) return; // déjà créé, ne pas dupliquer
+    const btnExcel = document.createElement('button');
+    btnExcel.type = 'button';
+    btnExcel.id = 'btn-excel-dynamique';
+    btnExcel.className = 'btn-pdf';
+    btnExcel.style.margin = '0';
+    btnExcel.style.background = '#1d6f42';
+    btnExcel.innerText = ' Télécharger Excel';
+    btnExcel.onclick = telechargerExcel;
+    const btnFermer = header.querySelector('.btn-close-globale');
+    if(btnFermer) header.insertBefore(btnExcel, btnFermer);
+    else header.appendChild(btnExcel);
+}
+
+// ✅ Charge dynamiquement la bibliothèque SheetJS (xlsx) si elle n'est pas déjà chargée
+function chargerLibrairieExcel() {
+    return new Promise((resolve, reject) => {
+        if(window.XLSX) return resolve();
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Impossible de charger la librairie Excel"));
+        document.head.appendChild(script);
+    });
 }
 
 function ouvrirVueGlobalePresence() {
@@ -1492,6 +1637,25 @@ function ouvrirVueGlobalePresence() {
     sessions.forEach(s => {
         let lpAll = historique[s]||[];
         let lp = (currentMode === 'affermissement' && activePromo) ? lpAll.filter(p => !p.promo || p.promo === activePromo) : lpAll;
+
+        // ✅ CORRECTION SAMEDI : rattacher la présence du samedi au dimanche précédent
+        // Le samedi qui suit un dimanche = rattrapage de ce dimanche, pas une nouvelle séance
+        if(currentMode === 'affermissement') {
+            lp = lp.map(p => {
+                const parts = p.date.split('/');
+                const dateObj = new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
+                if(dateObj.getDay() === 6) { // samedi
+                    const dimanche = new Date(dateObj);
+                    dimanche.setDate(dateObj.getDate() - 6); // dimanche précédent
+                    const dd = String(dimanche.getDate()).padStart(2,'0');
+                    const mm = String(dimanche.getMonth()+1).padStart(2,'0');
+                    const yyyy = dimanche.getFullYear();
+                    return { ...p, date: `${dd}/${mm}/${yyyy}`, estRattrapage: true };
+                }
+                return p;
+            });
+        }
+
         let dates = [...new Set(lp.map(x=>x.date))].sort((a,b) => { let [ja,ma,aa]=a.split('/'); let [jb,mb,ab]=b.split('/'); return new Date(aa,ma-1,ja) - new Date(ab,mb-1,jb); });
         structure.push({ session: s, dates: dates, lp: lp, color: couleurGrille }); totalDatesGlobalCount += dates.length;
     });
@@ -1504,18 +1668,29 @@ function ouvrirVueGlobalePresence() {
     }); html += `</tr>`;
     let tousEtudiants = [...getEtudiantsFiltres()].sort((a,b) => a.prenom.localeCompare(b.prenom));
     let num = 1;
+    // ✅ Compteur de présents par date, pour chaque séance/colonne
+    structure.forEach(st => { st.presentsParDate = {}; st.dates.forEach(d => st.presentsParDate[d] = 0); });
     tousEtudiants.forEach(etu => {
         html += `<tr><td style="text-align:center;font-weight:bold;color:#006070;font-size:12px;background:#e8f4f8;">${num++}</td><td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td><td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
         let totalPresencesGlobal = 0;
         structure.forEach(st => {
             let totalP = 0;
-            st.dates.forEach(d => { if(st.lp.find(p => p.code === etu.code && p.date === d)) { html += `<td style="background:${st.color};">1</td>`; totalP++; totalPresencesGlobal++; } else { html += `<td></td>`; } });
+            st.dates.forEach(d => { if(st.lp.find(p => p.code === etu.code && p.date === d)) { html += `<td style="background:${st.color};">1</td>`; totalP++; totalPresencesGlobal++; st.presentsParDate[d]++; } else { html += `<td></td>`; } });
             let pct = st.dates.length > 0 ? Math.round((totalP / st.dates.length) * 100) : 0; html += `<td class="excel-total">${totalP>0?totalP:''}</td><td class="excel-total" style="${getCouleurPourcentage(pct)}">${pct}%</td>`;
         });
         let pctGlobal = totalDatesGlobalCount > 0 ? Math.round((totalPresencesGlobal / totalDatesGlobalCount) * 100) : 0; html += `<td class="excel-total" style="${getCouleurPourcentage(pctGlobal)}; font-size:14px;"><b>${pctGlobal}%</b></td></tr>`;
     });
     html += `<tr style="background:#006070;"><td colspan="3" style="color:white;font-weight:bold;font-size:13px;padding:6px;text-align:left;">TOTAL : ${tousEtudiants.length} participant(s)</td>${structure.map(st=>`<td colspan="${st.dates.length+2}" style="color:white;font-weight:bold;text-align:center;font-size:12px;">${st.dates.length} séance(s)</td>`).join('')}<td style="color:white;"></td></tr>`;
+    // ✅ NOUVELLE LIGNE : nombre de présents pour chaque date/séance
+    html += `<tr style="background:#28a745;"><td colspan="3" style="color:white;font-weight:bold;font-size:12px;padding:6px;text-align:left;"> PRÉSENTS PAR SÉANCE</td>`;
+    structure.forEach(st => {
+        st.dates.forEach(d => { html += `<td style="color:white;font-weight:bold;text-align:center;font-size:12px;background:#28a745;">${st.presentsParDate[d]}</td>`; });
+        html += `<td colspan="2" style="background:#28a745;"></td>`;
+    });
+    html += `<td style="background:#28a745;"></td></tr>`;
     container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
+    // Sauvegarder la structure pour l'export Excel
+    window._dernièreStructurePresence = { structure, tousEtudiants, type: 'presence' };
 }
 
 function ouvrirVueGlobaleCote() {
@@ -1545,8 +1720,171 @@ function ouvrirVueGlobaleCote() {
     });
     html += `<tr style="background:#006070;"><td colspan="3" style="color:white;font-weight:bold;font-size:13px;padding:6px;text-align:left;">TOTAL : ${tousEtudiants.length} participant(s)</td>${sessionsCotes.map(st=>`<td colspan="${(st.sous&&st.sous.length>0)?st.sous.length+1:2}" style="color:white;font-weight:bold;text-align:center;font-size:12px;">${(st.sous&&st.sous.length)||0} TP(s)</td>`).join('')}<td style="color:white;"></td></tr>`;
     container.innerHTML = html + `</table>`; document.getElementById('modal-vue-globale').style.display = 'flex';
+    // Sauvegarder pour l'export Excel
+    window._dernièreStructurePresence = { tousEtudiants, type: 'cote' };
 }
 function fermerVueGlobale() { document.getElementById('modal-vue-globale').style.display = 'none'; }
+
+// =========== SUIVI GÉNÉRAL MERCREDI ===========
+function ouvrirVueGlobaleMercredi() {
+    const container = document.getElementById('table-excel-container');
+    let html = `<table class="excel-table">`;
+    let structure = [];
+    const couleurGrille = '#c3e6cb';
+    let totalDatesGlobalCount = 0;
+
+    sessions.forEach(s => {
+        let lp = historique[s] || [];
+        let dates = [...new Set(lp.map(x=>x.date))].sort((a,b) => {
+            let [ja,ma,aa]=a.split('/'); let [jb,mb,ab]=b.split('/');
+            return new Date(aa,ma-1,ja) - new Date(ab,mb-1,jb);
+        });
+        structure.push({ session: s, dates, lp, color: couleurGrille });
+        totalDatesGlobalCount += dates.length;
+    });
+
+    html += `<tr class="excel-header-row1">
+        <th rowspan="2" style="background:#006070;color:white;font-size:12px;min-width:30px;">N°</th>
+        <th rowspan="2" class="col-prenom">PRENOMS</th>
+        <th rowspan="2" class="col-nom">NOMS</th>`;
+    structure.forEach(st => { html += `<th colspan="${st.dates.length+2}" style="background:${st.color};font-size:13px;color:#000;">${st.session.toUpperCase()}</th>`; });
+    html += `<th rowspan="2" style="background:#ffc107;font-size:13px;color:#000;">% GLOBAL</th></tr><tr>`;
+    structure.forEach(st => {
+        st.dates.forEach(d => {
+            let parts = d.split('/');
+            let mois = ['janv','févr','mars','avr','mai','juin','juil','août','sept','oct','nov','déc'];
+            html += `<th style="background:${st.color};font-size:10px;color:#000;">${parts[0]}-${mois[parseInt(parts[1])-1]}</th>`;
+        });
+        html += `<th style="background:${st.color};font-size:10px;color:#000;">TOT</th><th style="background:${st.color};font-size:10px;color:#000;">%</th>`;
+    });
+    html += `</tr>`;
+
+    let tousEtudiants = [...etudiants].sort((a,b) => a.prenom.localeCompare(b.prenom));
+    let num = 1;
+    structure.forEach(st => { st.presentsParDate = {}; st.dates.forEach(d => st.presentsParDate[d] = 0); });
+
+    tousEtudiants.forEach(etu => {
+        html += `<tr>
+            <td style="text-align:center;font-weight:bold;color:#006070;font-size:12px;background:#e8f4f8;">${num++}</td>
+            <td class="col-prenom" style="background:#fff;">${etu.prenom.toUpperCase()}</td>
+            <td class="col-nom" style="background:#fff;">${etu.nom.toUpperCase()} ${etu.postnom||""}</td>`;
+        let totalPresencesGlobal = 0;
+        structure.forEach(st => {
+            let totalP = 0;
+            st.dates.forEach(d => {
+                if(st.lp.find(p => p.code === etu.code && p.date === d)) {
+                    html += `<td style="background:${st.color};">1</td>`; totalP++; totalPresencesGlobal++; st.presentsParDate[d]++;
+                } else { html += `<td></td>`; }
+            });
+            let pct = st.dates.length > 0 ? Math.round((totalP / st.dates.length) * 100) : 0;
+            html += `<td class="excel-total">${totalP>0?totalP:''}</td><td class="excel-total" style="${getCouleurPourcentage(pct)}">${pct}%</td>`;
+        });
+        let pctGlobal = totalDatesGlobalCount > 0 ? Math.round((totalPresencesGlobal / totalDatesGlobalCount) * 100) : 0;
+        html += `<td class="excel-total" style="${getCouleurPourcentage(pctGlobal)};font-size:14px;"><b>${pctGlobal}%</b></td></tr>`;
+    });
+
+    html += `<tr style="background:#006070;">
+        <td colspan="3" style="color:white;font-weight:bold;font-size:13px;padding:6px;text-align:left;">TOTAL : ${tousEtudiants.length} participant(s)</td>
+        ${structure.map(st=>`<td colspan="${st.dates.length+2}" style="color:white;font-weight:bold;text-align:center;font-size:12px;">${st.dates.length} séance(s)</td>`).join('')}
+        <td style="color:white;"></td></tr>`;
+
+    html += `<tr style="background:#28a745;"><td colspan="3" style="color:white;font-weight:bold;font-size:12px;padding:6px;text-align:left;"> PRÉSENTS PAR SÉANCE</td>`;
+    structure.forEach(st => {
+        st.dates.forEach(d => { html += `<td style="color:white;font-weight:bold;text-align:center;font-size:12px;background:#28a745;">${st.presentsParDate[d]}</td>`; });
+        html += `<td colspan="2" style="background:#28a745;"></td>`;
+    });
+    html += `<td style="background:#28a745;"></td></tr>`;
+
+    container.innerHTML = html + `</table>`;
+    document.getElementById('modal-vue-globale').style.display = 'flex';
+    window._dernièreStructurePresence = { structure, tousEtudiants, type: 'mercredi' };
+}
+
+// =========== EXPORT EXCEL ===========
+async function telechargerExcel() {
+    const data = window._dernièreStructurePresence;
+    if(!data) return alert("Aucune donnée à exporter. Ouvrez d'abord le Suivi Général.");
+
+    try {
+        await chargerLibrairieExcel(); // ✅ Charge XLSX dynamiquement si besoin
+    } catch(e) {
+        return alert("Impossible de charger l'export Excel. Vérifiez votre connexion internet.");
+    }
+
+    const joursAbrev = ['dim','lun','mar','mer','jeu','ven','sam'];
+
+    if(data.type === 'presence') {
+        // ── Construire les en-têtes : N°, Prénom, Nom, puis chaque date avec son jour ──
+        const headerRow1 = ['N°', 'PRENOMS', 'NOMS'];
+        const headerRow2 = ['', '', ''];
+        data.structure.forEach(st => {
+            st.dates.forEach(d => {
+                headerRow1.push(st.session.toUpperCase());
+                let [j,m,a] = d.split('/');
+                let jourSemaine = joursAbrev[new Date(a, m-1, j).getDay()];
+                headerRow2.push(`${jourSemaine} ${d}`);
+            });
+            headerRow1.push(st.session.toUpperCase(), st.session.toUpperCase());
+            headerRow2.push('TOTAL', '%');
+        });
+        headerRow1.push('GLOBAL'); headerRow2.push('%');
+
+        const rows = [headerRow1, headerRow2];
+
+        // ── Une ligne par participant ──
+        let num = 1;
+        let totalDatesGlobal = data.structure.reduce((s,st)=>s+st.dates.length,0);
+        data.tousEtudiants.forEach(etu => {
+            const row = [num++, etu.prenom.toUpperCase(), etu.nom.toUpperCase() + (etu.postnom?(' '+etu.postnom):'')];
+            let totalGlobal = 0;
+            data.structure.forEach(st => {
+                let totalSession = 0;
+                st.dates.forEach(d => {
+                    const present = st.lp.find(p => p.code === etu.code && p.date === d);
+                    row.push(present ? 1 : '');
+                    if(present) { totalSession++; totalGlobal++; }
+                });
+                const pct = st.dates.length > 0 ? Math.round((totalSession/st.dates.length)*100) : 0;
+                row.push(totalSession, pct + '%');
+            });
+            const pctGlobal = totalDatesGlobal > 0 ? Math.round((totalGlobal/totalDatesGlobal)*100) : 0;
+            row.push(pctGlobal + '%');
+            rows.push(row);
+        });
+
+        // ── Ligne TOTAL participants ──
+        const ligneTotal = ['', '', 'TOTAL : ' + data.tousEtudiants.length + ' participant(s)'];
+        data.structure.forEach(st => { st.dates.forEach(()=>ligneTotal.push('')); ligneTotal.push(st.dates.length + ' séance(s)', ''); });
+        ligneTotal.push('');
+        rows.push(ligneTotal);
+
+        // ── Ligne PRÉSENTS PAR SÉANCE ──
+        const lignePresents = ['', '', 'PRÉSENTS PAR SÉANCE'];
+        data.structure.forEach(st => { st.dates.forEach(d => lignePresents.push(st.presentsParDate[d])); lignePresents.push('', ''); });
+        lignePresents.push('');
+        rows.push(lignePresents);
+
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        // Largeur des colonnes pour bien lire noms/prénoms
+        ws['!cols'] = [{wch:5},{wch:18},{wch:22}, ...headerRow1.slice(3).map(()=>({wch:10}))];
+        // Fusionner les cellules d'en-tête par séance
+        ws['!merges'] = ws['!merges'] || [];
+        let colIdx = 3;
+        data.structure.forEach(st => {
+            const span = st.dates.length + 2;
+            ws['!merges'].push({ s: { r:0, c:colIdx }, e: { r:0, c:colIdx+span-1 } });
+            colIdx += span;
+        });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Suivi Présences");
+        XLSX.writeFile(wb, "Suivi_General_Presences.xlsx");
+
+    } else {
+        // Export simple pour le mode côte (par TP)
+        alert("Export Excel disponible uniquement pour le suivi des présences pour le moment.");
+    }
+}
 
 function telechargerPDF(elementId, nomFichier) {
     const el = document.getElementById(elementId);
