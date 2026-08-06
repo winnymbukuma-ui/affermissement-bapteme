@@ -25,7 +25,7 @@ let promosAffermissement = [];
 let accuseTPData     = {};
 let encadrantsInscrits = [];
 let motDePasse       = "";
-let leconsGlobal     = []; // ✅ Cache global des leçons pour accès au champ bloquee
+let leconsGlobal     = []; //  Cache global des leçons pour accès au champ bloquee
 
 let currentMode         = '';
 let html5QrCode         = null;
@@ -1457,7 +1457,7 @@ async function validerPresence(code) {
 
         // ✅ VÉRIFIER SI LA LEÇON EST BLOQUÉE
         if(leconRows[0].bloquee === true) {
-            alert("🔒 Cette leçon est bloquée. Aucune présence ne peut être enregistrée.\nContactez l'administrateur pour la débloquer.");
+            alert(" Cette leçon est bloquée. Aucune présence ne peut être enregistrée.\nContactez l'administrateur pour la débloquer.");
             return;
         }
 
@@ -1499,7 +1499,7 @@ async function validerPresence(code) {
         if(error) {
             if(error.code === '23505') {
                 // Présence déjà enregistrée aujourd'hui — message clair
-                alert("ℹ️ " + etu.nom.toUpperCase() + " " + etu.prenom + "\n\nPrésence déjà prise pour aujourd'hui.\n(Si ce n'est pas normal, vérifiez le relevé individuel.)");
+                alert(" " + etu.nom.toUpperCase() + " " + etu.prenom + "\n\nPrésence déjà prise pour aujourd'hui.\n(Si ce n'est pas normal, vérifiez le relevé individuel.)");
             } else {
                 alert("Erreur présence : " + error.message);
             }
@@ -1511,7 +1511,7 @@ async function validerPresence(code) {
             try { html5QrCode.stop(); document.getElementById('btn-start').style.display='block'; document.getElementById('btn-stop').style.display='none'; } catch(e2){} 
         }
         
-        alert("✔ Présence validée : " + etu.nom.toUpperCase() + " " + etu.prenom);
+        alert(" Présence validée : " + etu.nom.toUpperCase() + " " + etu.prenom);
         document.getElementById('code-manuel').value = "";
         
     } catch(e) {
@@ -1612,7 +1612,7 @@ function genererReleve(code) {
 function genererReleveCote(code) {
     const etu = etudiants.find(e => e.code === code); if(!etu) return;
     let ph = etu.photo ? `<img src="${etu.photo}" class="releve-photo" onclick="ouvrirLightbox('${etu.photo}', '${etu.nom.toUpperCase()} ${etu.prenom}')">` : '';
-    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;"> ${etu.code}</div></div><h4 style="color:#006070;">📝 Détail par TP :</h4>`;
+    let html = `<div class="releve-card"><div class="releve-header"><h3> RELEVÉ INDIVIDUEL - COTES & TP</h3>${ph}${genererInfoEditable(etu)}<p class="nom-eleve">${etu.nom.toUpperCase()} ${etu.prenom}</p><div style="background:#006070;color:white;display:inline-block;padding:6px 16px;border-radius:8px;font-size:1.3em;letter-spacing:6px;font-weight:bold;margin:8px 0;"> ${etu.code}</div></div><h4 style="color:#006070;"> Détail par TP :</h4>`;
     sessionsCotes.forEach(st => {
         html += `<div style="background:#fff;border:1px solid #ddd;padding:8px;border-radius:5px;margin:5px 0;"><b style="color:#006070;">${st.nom}</b>`;
         if(st.sous && st.sous.length > 0) {
