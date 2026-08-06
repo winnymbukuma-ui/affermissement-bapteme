@@ -24,7 +24,8 @@ let cotesData        = {};
 let promosAffermissement = [];
 let accuseTPData     = {};
 let encadrantsInscrits = [];
-let motDePasse       = ""; // chargé depuis Supabase au démarrage
+let motDePasse       = "";
+let leconsGlobal     = []; // ✅ Cache global des leçons pour accès au champ bloquee
 
 let currentMode         = '';
 let html5QrCode         = null;
@@ -83,6 +84,25 @@ async function dbDelete(table, match) {
     Object.entries(match).forEach(([k,v]) => { query = query.eq(k, v); });
     const { error } = await query;
     if (error) { console.error('Supabase DELETE error [' + table + ']:', error.message); throw error; }
+}
+
+// ✅ CORRECTION DÉFINITIVE limite 1000 lignes : pagination réelle via .range() en boucle.
+// Récupère TOUTES les lignes d'une table, quel que soit leur nombre (pas de plafond fixe).
+async function dbSelectAllRange(table, filters) {
+    const pageSize = 1000;
+    let from = 0;
+    let all = [];
+    while (true) {
+        let query = db.from(table).select('*');
+        if (filters) Object.entries(filters).forEach(([k, v]) => { query = query.eq(k, v); });
+        const { data, error } = await query.range(from, from + pageSize - 1);
+        if (error) { console.error('Supabase RANGE SELECT error [' + table + ']:', error.message); break; }
+        if (!data || data.length === 0) break;
+        all = all.concat(data);
+        if (data.length < pageSize) break; // dernière page atteinte
+        from += pageSize;
+    }
+    return all;
 }
 
 // =========== INIT & NAVIGATION ===========
@@ -320,11 +340,12 @@ async function choisirMercredi() {
 // =========== DATA GESTION — Charge depuis Supabase + cache local ===========
 async function chargerDonnees() {
     if(currentMode === 'bapteme') {
-        //  OPTIMISATION : charger participants, leçons et présences en parallèle (1 aller-retour au lieu de 3)
+        //  OPTIMISATION : charger participants, leçons et présences en parallèle
+        // ✅ CORRECTION : pagination réelle via .range() — aucune limite fixe de lignes
         const [parts, lecons, presences] = await Promise.all([
             dbSelect('participants_bapteme'),
             dbSelect('lecons_bapteme'),
-            dbSelect('presences_bapteme')
+            dbSelectAllRange('presences_bapteme')
         ]);
 
         etudiants = parts.map(p => ({
@@ -355,7 +376,7 @@ async function chargerDonnees() {
             dbSelect('participants_affermissement'),
             dbSelect('sessions_affermissement'),
             db.from('lecons_affermissement').select('*').eq('type', 'mercredi').then(r => r.data || []),
-            dbSelect('presences_mercredi')
+            dbSelectAllRange('presences_mercredi')
         ]);
 
         const sessActive = sessRows.find(s => s.est_active === true);
@@ -390,13 +411,14 @@ async function chargerDonnees() {
 
     } else if(currentMode === 'affermissement' || currentMode === 'cote') {
         //  OPTIMISATION : charger tout en parallèle (1 aller-retour au lieu de 6)
+        // ✅ CORRECTION : pagination réelle via .range() — aucune limite fixe de lignes
         const [parts, sessRows, lecons, sousDossiers, presences, cotesRows] = await Promise.all([
             dbSelect('participants_affermissement'),
             dbSelect('sessions_affermissement'),
             dbSelect('lecons_affermissement'),
             dbSelect('sous_dossiers_cote'),
-            dbSelect('presences_affermissement'),
-            dbSelect('cotes')
+            dbSelectAllRange('presences_affermissement'),
+            dbSelectAllRange('cotes')
         ]);
 
         // Participants
@@ -425,27 +447,37 @@ async function chargerDonnees() {
         // NULL = leçons créées avant la migration → on regarde si elles ont des sous-dossiers
 
         const idsAvecSousDoss = new Set(sousDossiers.map(sd => sd.lecon_id));
+        leconsGlobal = lecons; // ✅ Mettre à jour le cache global
 
+        // ✅ SÉPARATION STRICTE des types de leçons
         const leconsPresence = lecons.filter(l => 
             l.type === 'presence' || 
             (l.type === null && !idsAvecSousDoss.has(l.id)) ||
             (l.type === undefined && !idsAvecSousDoss.has(l.id))
+            // NB: type 'mercredi' et 'cote' sont EXCLUS ici
         );
         const leconsCote = lecons.filter(l => 
             l.type === 'cote' || 
             (l.type === null && idsAvecSousDoss.has(l.id)) ||
             (l.type === undefined && idsAvecSousDoss.has(l.id))
         );
+        // IDs des leçons de présence affermissement uniquement (pas mercredi, pas cote)
+        const idsLeconsPresence = new Set(leconsPresence.map(l => l.id));
 
-        // sessions = leçons de présence uniquement
+        // sessions = leçons de présence uniquement (sans mercredi)
         sessions = leconsPresence.sort((a,b)=>(a.ordre||0)-(b.ordre||0)).map(l => l.nom);
         if(sessions.length === 0) sessions = ["LECON 1"];
 
-        // Présences
+        // ✅ Présences affermissement : exclure les présences des leçons mercredi
         historique = {};
         for(const pr of presences) {
             const lecon = lecons.find(l => l.id === pr.lecon_id);
-            const nomLecon = lecon ? lecon.nom : sessions[0];
+            if(!lecon) continue;
+            // ✅ CORRECTION : ignorer les leçons de type 'mercredi' dans l'historique affermissement
+            if(lecon.type === 'mercredi') continue;
+            // Ignorer aussi les leçons qui ne sont pas dans leconsPresence
+            if(!idsLeconsPresence.has(lecon.id)) continue;
+            const nomLecon = lecon.nom;
             const part = etudiants.find(e => e._id === pr.participant_id);
             const sess = sessRows.find(s => s.id === pr.session_id);
             if(!part) continue;
@@ -524,8 +556,6 @@ async function lancerSessionAdmin(prenom, pushState = true) {
         const btnScan = document.getElementById('btn-start');
         if(btnScan) btnScan.style.display = 'none';
         document.getElementById('admin-title').innerText = " Admin - MERCREDI";
-        let btnNew = document.querySelector('[onclick="togglePromos()"]');
-        if(btnNew) btnNew.style.display = 'none';
     }
 
     //  Lire le code d'accès depuis Supabase
@@ -1009,6 +1039,11 @@ async function creerDossier() {
             await dbInsert('lecons_bapteme', { nom: n, ordre: sessions.length + 1 });
             sessions.push(n);
             updateSessionSelect();
+        } else if(currentMode === 'mercredi') {
+            // ✅ CORRECTION : Type "mercredi" — visible uniquement dans admin mercredi, PAS dans affermissement
+            const inserted = await dbInsert('lecons_affermissement', { nom: n, type: 'mercredi', ordre: sessions.length + 1 });
+            sessions.push(n);
+            updateSessionSelect();
         } else {
             // ✅ Type "presence" — visible uniquement dans admin affermissement, PAS dans côtes
             const inserted = await dbInsert('lecons_affermissement', { nom: n, type: 'presence', ordre: sessions.length + 1 });
@@ -1046,15 +1081,19 @@ function refreshDossiersList() {
             </div>`;
         }).join('');
     } else {
-        document.getElementById('liste-dossiers-admin').innerHTML = sessions.map((s, idx) => 
-            `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px;border-bottom:1px solid #eee;">
-             <span><b>${s}</b></span>
+        document.getElementById('liste-dossiers-admin').innerHTML = sessions.map((s, idx) => {
+            // ✅ Trouver si la leçon est bloquée
+            const leconObj = leconsGlobal.find(l => l.nom === s);
+            const estBloquee = leconObj ? leconObj.bloquee : false;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px;border-bottom:1px solid #eee;">
+             <span><b>${s}</b>${estBloquee ? ' <span style="color:#dc3545;font-size:11px;">🔒 BLOQUÉE</span>' : ''}</span>
              <div style="display:flex;gap:4px;">
+                 <button type="button" style="background:${estBloquee?'#28a745':'#dc3545'};color:white;border:none;border-radius:3px;padding:2px 6px;font-size:11px;" data-idx="${idx}" onclick="toggleBlocageLecon(parseInt(this.dataset.idx))">${estBloquee?'🔓 Débloquer':'🔒 Bloquer'}</button>
                  <button type="button" style="background:#17a2b8;color:white;border:none;border-radius:3px;padding:2px 6px;font-size:12px;" data-idx="${idx}" onclick="renommerDossier(parseInt(this.dataset.idx))">✏️</button>
                  <button type="button" style="background:#dc3545;color:white;border:none;border-radius:3px;padding:2px 5px;" data-idx="${idx}" onclick="supprimerDossier(parseInt(this.dataset.idx))">✕</button>
              </div>
-             </div>`
-        ).join('');
+             </div>`;
+        }).join('');
     }
 }
 
@@ -1071,6 +1110,24 @@ async function supprimerDossier(idx) {
         updateSessionSelect();
         refreshDossiersList();
     } catch(e) { alert("Erreur suppression : " + e.message); }
+}
+
+async function toggleBlocageLecon(idx) {
+    const nom = sessions[idx];
+    if(!nom) return;
+    try {
+        const table = currentMode === 'bapteme' ? 'lecons_bapteme' : 'lecons_affermissement';
+        const rows = await dbSelect(table, { nom: nom });
+        if(rows.length === 0) return alert("Leçon introuvable.");
+        const estBloquee = rows[0].bloquee || false;
+        const nouvelEtat = !estBloquee;
+        await dbUpdate(table, { nom: nom }, { bloquee: nouvelEtat });
+        // Mettre à jour l'objet local dans leconsGlobal
+        const lObj = leconsGlobal.find(l => l.nom === nom);
+        if(lObj) lObj.bloquee = nouvelEtat;
+        alert((nouvelEtat ? "🔒 Leçon bloquée" : "🔓 Leçon débloquée") + " : " + nom);
+        refreshDossiersList();
+    } catch(e) { alert("Erreur : " + e.message); }
 }
 
 async function renommerDossier(idx) {
@@ -1301,6 +1358,56 @@ async function validerPresence(code) {
 
     let curSess = document.getElementById('select-session').value; 
     if(!curSess) return alert("Aucune session sélectionnée");
+
+    // ✅ MODE MERCREDI : traitement regroupé côté serveur (1 seul appel réseau via RPC)
+    // Les modes affermissement et bapteme ne sont PAS touchés — logique inchangée plus bas.
+    if(currentMode === 'mercredi') {
+        try {
+            const now = new Date();
+            const jour = now.getDay();
+            const diffVersLundi = (jour === 0) ? -6 : 1 - jour;
+            const lundi = new Date(now); lundi.setDate(now.getDate() + diffVersLundi);
+            const mercredi = new Date(lundi); mercredi.setDate(lundi.getDate() + 2);
+            const dateISO = mercredi.getFullYear() + '-' +
+                             String(mercredi.getMonth()+1).padStart(2,'0') + '-' +
+                             String(mercredi.getDate()).padStart(2,'0');
+
+            const { data, error } = await db.rpc('valider_presence_mercredi', {
+                p_code: code,
+                p_lecon_nom: curSess,
+                p_encadrant_prenom: encadrantActuel,
+                p_date_presence: dateISO
+            });
+
+            if(error) { alert("Erreur présence : " + error.message); return; }
+
+            switch(data && data.status) {
+                case 'code_inconnu':
+                    alert(" Code Inconnu ! Ce code n'existe pas dans la base de données.");
+                    return;
+                case 'lecon_introuvable':
+                    alert("Erreur présence : Leçon introuvable dans la base. Vérifiez que la leçon existe.");
+                    return;
+                case 'bloquee':
+                    alert("🔒 Cette leçon est bloquée. Aucune présence ne peut être enregistrée.\nContactez l'administrateur pour la débloquer.");
+                    return;
+                case 'deja_prise':
+                    alert("ℹ️ " + data.nom.toUpperCase() + " " + data.prenom + "\n\nPrésence déjà prise pour aujourd'hui.\n(Si ce n'est pas normal, vérifiez le relevé individuel.)");
+                    return;
+                case 'ok':
+                    if(html5QrCode) { 
+                        try { html5QrCode.stop(); document.getElementById('btn-start').style.display='block'; document.getElementById('btn-stop').style.display='none'; } catch(e2){} 
+                    }
+                    alert("✔ Présence validée : " + data.nom.toUpperCase() + " " + data.prenom);
+                    document.getElementById('code-manuel').value = "";
+                    return;
+                default:
+                    alert("Erreur présence : réponse inattendue du serveur.");
+                    return;
+            }
+        } catch(e) { alert("Erreur présence : " + e.message); return; }
+    }
+
     let activePromo = (currentMode === 'affermissement') ? (await getActiveSession()) : '';
 
     try {
@@ -1347,6 +1454,12 @@ async function validerPresence(code) {
             leconRows = await dbSelect(leconTable, { nom: curSess });
         }
         if(leconRows.length === 0) throw new Error("Leçon introuvable dans la base. Vérifiez que la leçon existe.");
+
+        // ✅ VÉRIFIER SI LA LEÇON EST BLOQUÉE
+        if(leconRows[0].bloquee === true) {
+            alert("🔒 Cette leçon est bloquée. Aucune présence ne peut être enregistrée.\nContactez l'administrateur pour la débloquer.");
+            return;
+        }
 
         // Trouver l'ID encadrant
         const encRows = await dbSelect('encadrants', { prenom: encadrantActuel });
@@ -1635,7 +1748,9 @@ function chargerLibrairieExcel() {
 
 function ouvrirVueGlobalePresence() {
     const container = document.getElementById('table-excel-container'); let html = `<table class="excel-table">`; let structure = []; const couleurGrille = '#b4c6e7'; let totalDatesGlobalCount = 0;
-    const activePromo = (currentMode === 'affermissement') ? (localStorage.getItem(KEY_ACTIVE_PROMO) || '') : '';
+    // ✅ CORRECTION : lire activePromo depuis le cache local déjà synchronisé par chargerDonnees
+    // chargerDonnees() a déjà lu depuis Supabase et mis à jour localStorage avant d'arriver ici
+    const activePromo = localStorage.getItem(KEY_ACTIVE_PROMO) || '';
     sessions.forEach(s => {
         let lpAll = historique[s]||[];
         let lp = (currentMode === 'affermissement' && activePromo) ? lpAll.filter(p => !p.promo || p.promo === activePromo) : lpAll;
